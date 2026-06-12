@@ -4,7 +4,7 @@ const SUPABASE_URL = "https://ahfecfutgsjattdbotyk.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFoZmVjZnV0Z3NqYXR0ZGJvdHlrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA5MjkxNjMsImV4cCI6MjA5NjUwNTE2M30.YK9dAY98cs1VnNR-cJrV21GCOmU0rwYNCNyEPrBMRXk";
 
 // ★ 管理者パスワード（変更したい場合はここを書き換えてください）
-const ADMIN_PASSWORD = "y911k224";
+const ADMIN_PASSWORD = "OP1929";
 
 async function sbFetch(path, options = {}) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
@@ -47,6 +47,10 @@ function Modal({ open, onClose, children }) {
 }
 
 export default function App() {
+  const [userName, setUserName] = useState("");
+  const [userNameInput, setUserNameInput] = useState("");
+  const [showNameScreen, setShowNameScreen] = useState(true);
+
   const [tab, setTab] = useState("list");
   const [items, setItems] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -61,12 +65,11 @@ export default function App() {
   const [error, setError] = useState(null);
   const [history, setHistory] = useState([]);
 
-  // 管理者モード
   const [isAdmin, setIsAdmin] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [passwordInput, setPasswordInput] = useState("");
   const [passwordError, setPasswordError] = useState(false);
-  const [pendingAction, setPendingAction] = useState(null); // 認証後に実行するアクション
+  const [pendingAction, setPendingAction] = useState(null);
 
   async function loadAll() {
     setLoading(true);
@@ -86,9 +89,14 @@ export default function App() {
     setLoading(false);
   }
 
-  useEffect(() => { loadAll(); }, []);
+  useEffect(() => { if (!showNameScreen) loadAll(); }, [showNameScreen]);
 
-  // 管理者認証が必要なアクションを要求する
+  function submitName() {
+    if (!userNameInput.trim()) return;
+    setUserName(userNameInput.trim());
+    setShowNameScreen(false);
+  }
+
   function requireAdmin(action) {
     if (isAdmin) {
       action();
@@ -105,18 +113,13 @@ export default function App() {
       setIsAdmin(true);
       setShowPasswordModal(false);
       setPasswordError(false);
-      if (pendingAction) {
-        pendingAction();
-        setPendingAction(null);
-      }
+      if (pendingAction) { pendingAction(); setPendingAction(null); }
     } else {
       setPasswordError(true);
     }
   }
 
-  function logout() {
-    setIsAdmin(false);
-  }
+  function logout() { setIsAdmin(false); }
 
   const filtered = useMemo(() => {
     return items.filter(it => {
@@ -144,11 +147,18 @@ export default function App() {
             item_name: item.name,
             change: delta,
             stock_after: newStock,
-            operator: isAdmin ? "管理者" : "一般",
+            operator: userName,
           }),
         });
       } catch { /* ログ失敗は無視 */ }
       setItems(prev => prev.map(it => it.id === item.id ? { ...it, stock: newStock } : it));
+      setHistory(prev => [{
+        item_name: item.name,
+        change: delta,
+        stock_after: newStock,
+        operator: userName,
+        created_at: new Date().toISOString(),
+      }, ...prev]);
     } catch (e) {
       alert("更新に失敗しました: " + e.message);
     }
@@ -235,12 +245,49 @@ export default function App() {
   };
   const labelStyle = { color: "#8e8e93", fontSize: 12, marginBottom: 4, display: "block" };
 
+  // ── 名前入力画面 ──
+  if (showNameScreen) {
+    return (
+      <div style={{ background: "#000", minHeight: "100vh", color: "#fff", fontFamily: "-apple-system,BlinkMacSystemFont,'Hiragino Sans',sans-serif", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ width: "100%", maxWidth: 360, padding: "0 24px" }}>
+          <div style={{ textAlign: "center", marginBottom: 40 }}>
+            <div style={{ fontSize: 48, marginBottom: 12 }}>📦</div>
+            <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800 }}>在庫管理</h1>
+            <p style={{ color: "#8e8e93", fontSize: 14, marginTop: 8 }}>あなたの名前を入力してください</p>
+          </div>
+          <input
+            value={userNameInput}
+            onChange={e => setUserNameInput(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && submitName()}
+            placeholder="例：田中"
+            style={{ ...fieldStyle, fontSize: 18, padding: "16px 14px", textAlign: "center" }}
+            autoFocus
+          />
+          <button
+            onClick={submitName}
+            disabled={!userNameInput.trim()}
+            style={{
+              width: "100%", background: userNameInput.trim() ? "#0a84ff" : "#2c2c2e",
+              border: "none", borderRadius: 14, color: userNameInput.trim() ? "#fff" : "#636366",
+              fontSize: 17, fontWeight: 700, padding: "16px 0", cursor: userNameInput.trim() ? "pointer" : "default",
+            }}>
+            はじめる
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── メイン画面 ──
   return (
     <div style={{ background: "#000", minHeight: "100vh", color: "#fff", fontFamily: "-apple-system,BlinkMacSystemFont,'Hiragino Sans',sans-serif", maxWidth: 480, margin: "0 auto", position: "relative" }}>
       {/* Header */}
       <div style={{ background: "#1c1c1e", padding: "16px 20px 12px", position: "sticky", top: 0, zIndex: 10 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-          <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800 }}>在庫管理</h1>
+          <div>
+            <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800 }}>在庫管理</h1>
+            <div style={{ fontSize: 12, color: "#8e8e93", marginTop: 2 }}>👤 {userName}</div>
+          </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             {isAdmin ? (
               <button onClick={logout} style={{ background: "#ff9500", border: "none", borderRadius: 8, color: "#fff", padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
@@ -289,7 +336,7 @@ export default function App() {
                 }}>{cat}</button>
               ))}
             </div>
-            <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
               <div style={{ background: "#1c1c1e", borderRadius: 12, padding: "10px 16px", flex: 1, textAlign: "center" }}>
                 <div style={{ fontSize: 22, fontWeight: 800 }}>{items.length}</div>
                 <div style={{ fontSize: 11, color: "#8e8e93" }}>総商品数</div>
@@ -320,7 +367,6 @@ export default function App() {
                     <span style={{ fontSize: 22, fontWeight: 800 }}>{item.stock}<span style={{ fontSize: 13, color: "#8e8e93", marginLeft: 4 }}>{item.unit}</span></span>
                     <button onClick={() => adjustStock(item, 1)} style={{ width: 36, height: 36, borderRadius: "50%", background: "#0a84ff", border: "none", color: "#fff", fontSize: 20, cursor: "pointer" }}>＋</button>
                   </div>
-                  {/* 編集・削除は管理者のみ */}
                   {isAdmin && (
                     <div style={{ display: "flex", gap: 6 }}>
                       <button onClick={() => setEditItem({...item})} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#0a84ff", padding: "6px 12px", fontSize: 13, cursor: "pointer" }}>編集</button>
@@ -364,13 +410,19 @@ export default function App() {
             {history.length === 0
               ? <div style={{ textAlign: "center", color: "#8e8e93", padding: 40 }}>履歴がありません</div>
               : history.map((h, i) => (
-                <div key={i} style={{ background: "#1c1c1e", borderRadius: 12, padding: "12px 16px", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontWeight: 600 }}>{h.item_name}</div>
-                    <div style={{ fontSize: 12, color: "#8e8e93" }}>{h.operator} · {new Date(h.created_at).toLocaleString("ja-JP")}</div>
-                  </div>
-                  <div style={{ fontWeight: 800, fontSize: 18, color: h.change > 0 ? "#34c759" : "#ff3b30" }}>
-                    {h.change > 0 ? "+" : ""}{h.change}
+                <div key={i} style={{ background: "#1c1c1e", borderRadius: 12, padding: "12px 16px", marginBottom: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 15 }}>{h.item_name}</div>
+                      <div style={{ fontSize: 12, color: "#8e8e93", marginTop: 2 }}>👤 {h.operator}</div>
+                      <div style={{ fontSize: 12, color: "#636366", marginTop: 1 }}>{new Date(h.created_at).toLocaleString("ja-JP")}</div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontWeight: 800, fontSize: 20, color: h.change > 0 ? "#34c759" : "#ff3b30" }}>
+                        {h.change > 0 ? "+" : ""}{h.change}
+                      </div>
+                      <div style={{ fontSize: 12, color: "#8e8e93" }}>残 {h.stock_after}</div>
+                    </div>
                   </div>
                 </div>
               ))
@@ -406,40 +458,23 @@ export default function App() {
         )}
       </div>
 
-      {/* 追加ボタン（管理者のみ・スマホ対応で中央寄り） */}
-      {tab === "list" && isAdmin && (
+      {/* 商品追加ボタン（管理者のみ・スマホ対応） */}
+      {tab === "list" && (
         <button
-          onClick={() => { setAddForm({ name: "", sku: "", category: categories[0]?.name || "", stock: 0, unit: "個" }); setShowAdd(true); }}
+          onClick={() => requireAdmin(() => {
+            setAddForm({ name: "", sku: "", category: categories[0]?.name || "", stock: 0, unit: "個" });
+            setShowAdd(true);
+          })}
           style={{
             position: "fixed",
             bottom: 32,
-            left: "50%",
-            transform: "translateX(200px)",  // 中央から200px右（480px幅の右端付近）
+            right: 24,
             width: 56, height: 56,
             borderRadius: "50%",
-            background: "#0a84ff",
+            background: isAdmin ? "#0a84ff" : "#636366",
             border: "none", color: "#fff", fontSize: 28,
             cursor: "pointer",
-            boxShadow: "0 4px 16px rgba(10,132,255,0.4)",
-            zIndex: 20,
-          }}>
-          ＋
-        </button>
-      )}
-      {tab === "list" && !isAdmin && (
-        <button
-          onClick={() => requireAdmin(() => { setAddForm({ name: "", sku: "", category: categories[0]?.name || "", stock: 0, unit: "個" }); setShowAdd(true); })}
-          style={{
-            position: "fixed",
-            bottom: 32,
-            left: "50%",
-            transform: "translateX(200px)",
-            width: 56, height: 56,
-            borderRadius: "50%",
-            background: "#636366",
-            border: "none", color: "#fff", fontSize: 28,
-            cursor: "pointer",
-            boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
+            boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
             zIndex: 20,
           }}>
           ＋
