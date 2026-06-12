@@ -131,7 +131,7 @@ export default function InventoryApp() {
       await sbFetch("inventory", { method: "POST", headers: { "Prefer": "return=minimal" }, body: JSON.stringify({ name: form.name, sku: form.sku, category: form.category, stock: Number(form.stock) || 0, unit: form.unit }) });
       setShowAddModal(false);
       await loadAll();
-    } catch (e) { alert("追加に失敗しました"); } finally { setSaving(false); }
+    } catch (e) { alert("追加に失敗しました: " + e.message); } finally { setSaving(false); }
   }
 
   async function saveEdit() {
