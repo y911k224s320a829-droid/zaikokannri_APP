@@ -128,7 +128,7 @@ export default function InventoryApp() {
     if (!form.name.trim()) return;
     setSaving(true);
     try {
-      await sbFetch("inventory", { method: "POST", prefer: "return=representation", body: JSON.stringify({ name: form.name, sku: form.sku, category: form.category, stock: Number(form.stock) || 0, unit: form.unit }) });
+      await sbFetch("inventory", { method: "POST", headers: { "Prefer": "return=minimal" }, body: JSON.stringify({ name: form.name, sku: form.sku, category: form.category, stock: Number(form.stock) || 0, unit: form.unit }) });
       setShowAddModal(false);
       await loadAll();
     } catch (e) { alert("追加に失敗しました"); } finally { setSaving(false); }
@@ -161,7 +161,7 @@ export default function InventoryApp() {
     setSaving(true);
     try {
       await sbFetch(`inventory?id=eq.${item.id}`, { method: "PATCH", body: JSON.stringify({ stock: newStock }) });
-      await sbFetch("inventory_log", { method: "POST", prefer: "return=representation", body: JSON.stringify({ inventory_id: item.id, item_name: item.name, action: stockAction.type === "in" ? "入庫" : "出庫", quantity: qty, user_name: userName }) });
+      await sbFetch("inventory_log", { method: "POST", headers: { "Prefer": "return=minimal" }, body: JSON.stringify({ inventory_id: item.id, item_name: item.name, action: stockAction.type === "in" ? "入庫" : "出庫", quantity: qty, user_name: userName }) });
       setShowStockModal(null);
       await loadAll();
     } catch (e) { alert("更新に失敗しました"); } finally { setSaving(false); }
@@ -170,7 +170,7 @@ export default function InventoryApp() {
   async function addCategory() {
     if (!newCategory.trim()) return;
     try {
-      await sbFetch("categories", { method: "POST", prefer: "return=representation", body: JSON.stringify({ name: newCategory.trim() }) });
+      await sbFetch("categories", { method: "POST", headers: { "Prefer": "return=minimal" }, body: JSON.stringify({ name: newCategory.trim() }) });
       setNewCategory("");
       await loadAll();
     } catch (e) { alert("追加に失敗しました（同じ名前がすでにあるかもしれません）"); }
