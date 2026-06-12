@@ -15,10 +15,7 @@ async function sbFetch(path, options = {}) {
     },
   });
   if (!res.ok) { const err = await res.text(); throw new Error(err); }
-  if (res.status === 204 || res.status === 201) return null;
-  const text = await res.text();
-  if (!text) return null;
-  return JSON.parse(text);
+  return null;
 }
 
 const LOW_STOCK_THRESHOLD = 5;
