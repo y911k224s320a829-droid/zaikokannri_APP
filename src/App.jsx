@@ -3,6 +3,9 @@ import { useState, useMemo, useEffect } from "react";
 const SUPABASE_URL = "https://ahfecfutgsjattdbotyk.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFoZmVjZnV0Z3NqYXR0ZGJvdHlrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA5MjkxNjMsImV4cCI6MjA5NjUwNTE2M30.YK9dAY98cs1VnNR-cJrV21GCOmU0rwYNCNyEPrBMRXk";
 
+// ★ 管理者パスワード（変更したい場合はここを書き換えてください）
+const ADMIN_PASSWORD = "admin1234";
+
 async function sbFetch(path, options = {}) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...options,
@@ -21,11 +24,7 @@ async function sbFetch(path, options = {}) {
   if (res.status === 204 || res.status === 201) return null;
   const text = await res.text();
   if (!text) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
+  try { return JSON.parse(text); } catch { return null; }
 }
 
 const LOW_STOCK_THRESHOLD = 5;
@@ -62,6 +61,13 @@ export default function App() {
   const [error, setError] = useState(null);
   const [history, setHistory] = useState([]);
 
+  // 管理者モード
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [passwordInput, setPasswordInput] = useState("");
+  const [passwordError, setPasswordError] = useState(false);
+  const [pendingAction, setPendingAction] = useState(null); // 認証後に実行するアクション
+
   async function loadAll() {
     setLoading(true);
     setError(null);
@@ -81,6 +87,36 @@ export default function App() {
   }
 
   useEffect(() => { loadAll(); }, []);
+
+  // 管理者認証が必要なアクションを要求する
+  function requireAdmin(action) {
+    if (isAdmin) {
+      action();
+    } else {
+      setPendingAction(() => action);
+      setPasswordInput("");
+      setPasswordError(false);
+      setShowPasswordModal(true);
+    }
+  }
+
+  function submitPassword() {
+    if (passwordInput === ADMIN_PASSWORD) {
+      setIsAdmin(true);
+      setShowPasswordModal(false);
+      setPasswordError(false);
+      if (pendingAction) {
+        pendingAction();
+        setPendingAction(null);
+      }
+    } else {
+      setPasswordError(true);
+    }
+  }
+
+  function logout() {
+    setIsAdmin(false);
+  }
 
   const filtered = useMemo(() => {
     return items.filter(it => {
@@ -108,7 +144,7 @@ export default function App() {
             item_name: item.name,
             change: delta,
             stock_after: newStock,
-            operator: "操作者",
+            operator: isAdmin ? "管理者" : "一般",
           }),
         });
       } catch { /* ログ失敗は無視 */ }
@@ -200,12 +236,23 @@ export default function App() {
   const labelStyle = { color: "#8e8e93", fontSize: 12, marginBottom: 4, display: "block" };
 
   return (
-    <div style={{ background: "#000", minHeight: "100vh", color: "#fff", fontFamily: "-apple-system,BlinkMacSystemFont,'Hiragino Sans',sans-serif", maxWidth: 480, margin: "0 auto" }}>
+    <div style={{ background: "#000", minHeight: "100vh", color: "#fff", fontFamily: "-apple-system,BlinkMacSystemFont,'Hiragino Sans',sans-serif", maxWidth: 480, margin: "0 auto", position: "relative" }}>
       {/* Header */}
       <div style={{ background: "#1c1c1e", padding: "16px 20px 12px", position: "sticky", top: 0, zIndex: 10 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
           <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800 }}>在庫管理</h1>
-          <button onClick={loadAll} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#fff", padding: "6px 12px", fontSize: 13, cursor: "pointer" }}>↻ 更新</button>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {isAdmin ? (
+              <button onClick={logout} style={{ background: "#ff9500", border: "none", borderRadius: 8, color: "#fff", padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                🔓 管理者
+              </button>
+            ) : (
+              <button onClick={() => { setPasswordInput(""); setPasswordError(false); setPendingAction(null); setShowPasswordModal(true); }} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#8e8e93", padding: "6px 12px", fontSize: 12, cursor: "pointer" }}>
+                🔒 管理者
+              </button>
+            )}
+            <button onClick={loadAll} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#fff", padding: "6px 12px", fontSize: 13, cursor: "pointer" }}>↻</button>
+          </div>
         </div>
         <div style={{ display: "flex", gap: 4 }}>
           {[["list","一覧"],["alert",`アラート${alertItems.length>0?" "+alertItems.length:""}`],["history","履歴"],["category","カテゴリ"]].map(([key,label])=>(
@@ -273,10 +320,13 @@ export default function App() {
                     <span style={{ fontSize: 22, fontWeight: 800 }}>{item.stock}<span style={{ fontSize: 13, color: "#8e8e93", marginLeft: 4 }}>{item.unit}</span></span>
                     <button onClick={() => adjustStock(item, 1)} style={{ width: 36, height: 36, borderRadius: "50%", background: "#0a84ff", border: "none", color: "#fff", fontSize: 20, cursor: "pointer" }}>＋</button>
                   </div>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    <button onClick={() => setEditItem({...item})} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#0a84ff", padding: "6px 12px", fontSize: 13, cursor: "pointer" }}>編集</button>
-                    <button onClick={() => setDeleteItem(item)} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#ff3b30", padding: "6px 12px", fontSize: 13, cursor: "pointer" }}>削除</button>
-                  </div>
+                  {/* 編集・削除は管理者のみ */}
+                  {isAdmin && (
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button onClick={() => setEditItem({...item})} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#0a84ff", padding: "6px 12px", fontSize: 13, cursor: "pointer" }}>編集</button>
+                      <button onClick={() => setDeleteItem(item)} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#ff3b30", padding: "6px 12px", fontSize: 13, cursor: "pointer" }}>削除</button>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -332,28 +382,89 @@ export default function App() {
         {!loading && tab === "category" && (
           <>
             <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>🏷️ カテゴリ管理</h2>
-            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-              <input value={newCatName} onChange={e=>setNewCatName(e.target.value)} placeholder="新しいカテゴリ名" style={{ ...fieldStyle, marginBottom: 0, flex: 1 }} />
-              <button onClick={addCategory} style={{ background: "#0a84ff", border: "none", borderRadius: 10, color: "#fff", padding: "0 18px", fontSize: 15, fontWeight: 700, cursor: "pointer" }}>追加</button>
-            </div>
+            {isAdmin && (
+              <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+                <input value={newCatName} onChange={e=>setNewCatName(e.target.value)} placeholder="新しいカテゴリ名" style={{ ...fieldStyle, marginBottom: 0, flex: 1 }} />
+                <button onClick={addCategory} style={{ background: "#0a84ff", border: "none", borderRadius: 10, color: "#fff", padding: "0 18px", fontSize: 15, fontWeight: 700, cursor: "pointer" }}>追加</button>
+              </div>
+            )}
+            {!isAdmin && (
+              <div style={{ background: "#2c2c2e", borderRadius: 12, padding: 14, marginBottom: 16, color: "#8e8e93", fontSize: 13, textAlign: "center" }}>
+                🔒 カテゴリの追加・削除は管理者のみ
+              </div>
+            )}
             {categories.length === 0 && <div style={{ textAlign: "center", color: "#8e8e93", padding: 20 }}>カテゴリがありません</div>}
             {categories.map(cat => (
               <div key={cat.id} style={{ background: "#1c1c1e", borderRadius: 12, padding: "14px 16px", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontWeight: 600 }}>{cat.name}</span>
-                <button onClick={() => deleteCategory(cat.id)} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#ff3b30", padding: "6px 12px", fontSize: 13, cursor: "pointer" }}>削除</button>
+                {isAdmin && (
+                  <button onClick={() => deleteCategory(cat.id)} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#ff3b30", padding: "6px 12px", fontSize: 13, cursor: "pointer" }}>削除</button>
+                )}
               </div>
             ))}
           </>
         )}
       </div>
 
-      {/* 追加ボタン */}
-      {tab === "list" && (
-        <button onClick={() => { setAddForm({ name: "", sku: "", category: categories[0]?.name || "", stock: 0, unit: "個" }); setShowAdd(true); }}
-          style={{ position: "fixed", bottom: 32, right: "calc(50% - 228px)", width: 56, height: 56, borderRadius: "50%", background: "#0a84ff", border: "none", color: "#fff", fontSize: 28, cursor: "pointer", boxShadow: "0 4px 16px rgba(10,132,255,0.4)", zIndex: 20 }}>
+      {/* 追加ボタン（管理者のみ・スマホ対応で中央寄り） */}
+      {tab === "list" && isAdmin && (
+        <button
+          onClick={() => { setAddForm({ name: "", sku: "", category: categories[0]?.name || "", stock: 0, unit: "個" }); setShowAdd(true); }}
+          style={{
+            position: "fixed",
+            bottom: 32,
+            left: "50%",
+            transform: "translateX(200px)",  // 中央から200px右（480px幅の右端付近）
+            width: 56, height: 56,
+            borderRadius: "50%",
+            background: "#0a84ff",
+            border: "none", color: "#fff", fontSize: 28,
+            cursor: "pointer",
+            boxShadow: "0 4px 16px rgba(10,132,255,0.4)",
+            zIndex: 20,
+          }}>
           ＋
         </button>
       )}
+      {tab === "list" && !isAdmin && (
+        <button
+          onClick={() => requireAdmin(() => { setAddForm({ name: "", sku: "", category: categories[0]?.name || "", stock: 0, unit: "個" }); setShowAdd(true); })}
+          style={{
+            position: "fixed",
+            bottom: 32,
+            left: "50%",
+            transform: "translateX(200px)",
+            width: 56, height: 56,
+            borderRadius: "50%",
+            background: "#636366",
+            border: "none", color: "#fff", fontSize: 28,
+            cursor: "pointer",
+            boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
+            zIndex: 20,
+          }}>
+          ＋
+        </button>
+      )}
+
+      {/* パスワード入力モーダル */}
+      <Modal open={showPasswordModal} onClose={() => setShowPasswordModal(false)}>
+        <h2 style={{ margin: "0 0 8px", fontSize: 18, fontWeight: 800 }}>🔒 管理者ログイン</h2>
+        <p style={{ color: "#8e8e93", fontSize: 13, marginBottom: 16 }}>パスワードを入力してください</p>
+        <input
+          type="password"
+          value={passwordInput}
+          onChange={e => { setPasswordInput(e.target.value); setPasswordError(false); }}
+          onKeyDown={e => e.key === "Enter" && submitPassword()}
+          placeholder="パスワード"
+          style={{ ...fieldStyle, border: passwordError ? "1px solid #ff3b30" : "none" }}
+          autoFocus
+        />
+        {passwordError && <p style={{ color: "#ff3b30", fontSize: 13, margin: "-6px 0 10px" }}>パスワードが違います</p>}
+        <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+          <button onClick={() => setShowPasswordModal(false)} style={{ flex: 1, background: "#2c2c2e", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>キャンセル</button>
+          <button onClick={submitPassword} style={{ flex: 1, background: "#0a84ff", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>ログイン</button>
+        </div>
+      </Modal>
 
       {/* 商品追加モーダル */}
       <Modal open={showAdd} onClose={() => setShowAdd(false)}>
