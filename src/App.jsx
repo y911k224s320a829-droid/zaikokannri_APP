@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
 
 const SUPABASE_URL = "https://ahfecfutgsjattdbotyk.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFoZmVjZnV0Z3NqYXR0ZGJvdHlrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDk0NDE3NDgsImV4cCI6MjA2NTAxNzc0OH0.YK9dAY98cs1VnNR-c3rV21GCOmU8XFMumzCzSV3bFLk";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFoZmVjZnV0Z3NqYXR0ZGJvdHlrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA5MjkxNjMsImV4cCI6MjA5NjUwNTE2M30.YK9dAY98cs1VnNR-cJrV21GCOmU0rwYNCNyEPrBMRXk";
 
 async function sbFetch(path, options = {}) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
