@@ -2,8 +2,6 @@ import { useState, useMemo, useEffect } from "react";
 
 const SUPABASE_URL = "https://ahfecfutgsjattdbotyk.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFoZmVjZnV0Z3NqYXR0ZGJvdHlrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA5MjkxNjMsImV4cCI6MjA5NjUwNTE2M30.YK9dAY98cs1VnNR-cJrV21GCOmU0rwYNCNyEPrBMRXk";
-
-// ★ 管理者パスワード（変更したい場合はここを書き換えてください）
 const ADMIN_PASSWORD = "OP1929";
 
 async function sbFetch(path, options = {}) {
@@ -17,10 +15,7 @@ async function sbFetch(path, options = {}) {
       ...options.headers,
     },
   });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(err);
-  }
+  if (!res.ok) { const err = await res.text(); throw new Error(err); }
   if (res.status === 204 || res.status === 201) return null;
   const text = await res.text();
   if (!text) return null;
@@ -39,7 +34,7 @@ function Modal({ open, onClose, children }) {
   if (!open) return null;
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 100, display: "flex", alignItems: "flex-end" }} onClick={onClose}>
-      <div style={{ background: "#1c1c1e", borderRadius: "20px 20px 0 0", width: "100%", maxWidth: 480, margin: "0 auto", padding: "24px 20px 40px" }} onClick={e => e.stopPropagation()}>
+      <div style={{ background: "#1c1c1e", borderRadius: "20px 20px 0 0", width: "100%", maxWidth: 480, margin: "0 auto", padding: "24px 20px 40px", maxHeight: "90vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
         {children}
       </div>
     </div>
@@ -54,16 +49,27 @@ export default function App() {
   const [tab, setTab] = useState("list");
   const [items, setItems] = useState([]);
   const [categories, setCategories] = useState([]);
+  const [projects, setProjects] = useState([]);
+  const [orders, setOrders] = useState([]);
+  const [history, setHistory] = useState([]);
   const [search, setSearch] = useState("");
   const [filterCat, setFilterCat] = useState("すべて");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
   const [showAdd, setShowAdd] = useState(false);
   const [editItem, setEditItem] = useState(null);
   const [deleteItem, setDeleteItem] = useState(null);
   const [addForm, setAddForm] = useState({ name: "", sku: "", category: "", stock: 0, unit: "個" });
+
+  // 入出庫モーダル
+  const [stockModal, setStockModal] = useState(null); // { item, direction: "in"|"out" }
+  const [stockForm, setStockForm] = useState({ quantity: 1, order_no: "", project_name: "" });
+
+  // カテゴリ・案件・受注番号の新規入力
   const [newCatName, setNewCatName] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [history, setHistory] = useState([]);
+  const [newProjectName, setNewProjectName] = useState("");
+  const [newOrderNo, setNewOrderNo] = useState("");
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
@@ -75,13 +81,17 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const [inv, cats, hist] = await Promise.all([
+      const [inv, cats, proj, ord, hist] = await Promise.all([
         sbFetch("inventory?order=created_at.desc"),
         sbFetch("categories?order=name.asc"),
+        sbFetch("projects?order=name.asc"),
+        sbFetch("orders?order=order_no.asc"),
         sbFetch("inventory_log?order=created_at.desc&limit=100"),
       ]);
       setItems(inv || []);
       setCategories(cats || []);
+      setProjects(proj || []);
+      setOrders(ord || []);
       setHistory(hist || []);
     } catch (e) {
       setError("データの読み込みに失敗しました: " + e.message);
@@ -98,67 +108,66 @@ export default function App() {
   }
 
   function requireAdmin(action) {
-    if (isAdmin) {
-      action();
-    } else {
+    if (isAdmin) { action(); }
+    else {
       setPendingAction(() => action);
-      setPasswordInput("");
-      setPasswordError(false);
+      setPasswordInput(""); setPasswordError(false);
       setShowPasswordModal(true);
     }
   }
 
   function submitPassword() {
     if (passwordInput === ADMIN_PASSWORD) {
-      setIsAdmin(true);
-      setShowPasswordModal(false);
-      setPasswordError(false);
+      setIsAdmin(true); setShowPasswordModal(false); setPasswordError(false);
       if (pendingAction) { pendingAction(); setPendingAction(null); }
-    } else {
-      setPasswordError(true);
-    }
+    } else { setPasswordError(true); }
   }
 
-  function logout() { setIsAdmin(false); }
-
-  const filtered = useMemo(() => {
-    return items.filter(it => {
-      const matchCat = filterCat === "すべて" || it.category === filterCat;
-      const matchSearch = !search || it.name.includes(search) || (it.sku || "").includes(search);
-      return matchCat && matchSearch;
-    });
-  }, [items, search, filterCat]);
+  const filtered = useMemo(() => items.filter(it => {
+    const matchCat = filterCat === "すべて" || it.category === filterCat;
+    const matchSearch = !search || it.name.includes(search) || (it.sku || "").includes(search);
+    return matchCat && matchSearch;
+  }), [items, search, filterCat]);
 
   const alertItems = items.filter(it => it.stock <= LOW_STOCK_THRESHOLD);
 
-  async function adjustStock(item, delta) {
+  // 入出庫実行
+  async function executeStock() {
+    const { item, direction } = stockModal;
+    const qty = Number(stockForm.quantity);
+    if (!qty || qty <= 0) { alert("個数を入力してください"); return; }
+    const delta = direction === "in" ? qty : -qty;
     const newStock = Math.max(0, item.stock + delta);
     try {
       await sbFetch(`inventory?id=eq.${item.id}`, {
         method: "PATCH",
         body: JSON.stringify({ stock: newStock }),
       });
-      try {
-        await sbFetch("inventory_log", {
-          method: "POST",
-          prefer: "return=minimal",
-          body: JSON.stringify({
-            item_id: item.id,
-            item_name: item.name,
-            change: delta,
-            stock_after: newStock,
-            operator: userName,
-          }),
-        });
-      } catch { /* ログ失敗は無視 */ }
+      await sbFetch("inventory_log", {
+        method: "POST",
+        prefer: "return=minimal",
+        body: JSON.stringify({
+          inventory_id: item.id,
+          item_name: item.name,
+          action: direction === "in" ? "入庫" : "出庫",
+          quantity: delta,
+          user_name: userName,
+          order_no: stockForm.order_no || null,
+          project_name: stockForm.project_name || null,
+        }),
+      });
       setItems(prev => prev.map(it => it.id === item.id ? { ...it, stock: newStock } : it));
       setHistory(prev => [{
         item_name: item.name,
-        change: delta,
-        stock_after: newStock,
-        operator: userName,
+        action: direction === "in" ? "入庫" : "出庫",
+        quantity: delta,
+        user_name: userName,
+        order_no: stockForm.order_no || null,
+        project_name: stockForm.project_name || null,
         created_at: new Date().toISOString(),
       }, ...prev]);
+      setStockModal(null);
+      setStockForm({ quantity: 1, order_no: "", project_name: "" });
     } catch (e) {
       alert("更新に失敗しました: " + e.message);
     }
@@ -168,82 +177,73 @@ export default function App() {
     if (!addForm.name.trim()) { alert("商品名を入力してください"); return; }
     try {
       await sbFetch("inventory", {
-        method: "POST",
-        prefer: "return=minimal",
-        body: JSON.stringify({
-          name: addForm.name.trim(),
-          sku: addForm.sku.trim() || null,
-          category: addForm.category || null,
-          stock: Number(addForm.stock) || 0,
-          unit: addForm.unit || "個",
-        }),
+        method: "POST", prefer: "return=minimal",
+        body: JSON.stringify({ name: addForm.name.trim(), sku: addForm.sku.trim() || null, category: addForm.category || null, stock: Number(addForm.stock) || 0, unit: addForm.unit || "個" }),
       });
       setShowAdd(false);
       setAddForm({ name: "", sku: "", category: "", stock: 0, unit: "個" });
       await loadAll();
-    } catch (e) {
-      alert("追加に失敗しました: " + e.message);
-    }
+    } catch (e) { alert("追加に失敗しました: " + e.message); }
   }
 
   async function saveEdit() {
     try {
       await sbFetch(`inventory?id=eq.${editItem.id}`, {
         method: "PATCH",
-        body: JSON.stringify({
-          name: editItem.name,
-          sku: editItem.sku,
-          category: editItem.category,
-          stock: Number(editItem.stock),
-          unit: editItem.unit,
-        }),
+        body: JSON.stringify({ name: editItem.name, sku: editItem.sku, category: editItem.category, stock: Number(editItem.stock), unit: editItem.unit }),
       });
-      setEditItem(null);
-      await loadAll();
-    } catch (e) {
-      alert("更新に失敗しました: " + e.message);
-    }
+      setEditItem(null); await loadAll();
+    } catch (e) { alert("更新に失敗しました: " + e.message); }
   }
 
   async function confirmDelete() {
     try {
       await sbFetch(`inventory?id=eq.${deleteItem.id}`, { method: "DELETE" });
-      setDeleteItem(null);
-      await loadAll();
-    } catch (e) {
-      alert("削除に失敗しました: " + e.message);
-    }
+      setDeleteItem(null); await loadAll();
+    } catch (e) { alert("削除に失敗しました: " + e.message); }
   }
 
   async function addCategory() {
     if (!newCatName.trim()) return;
     try {
-      await sbFetch("categories", {
-        method: "POST",
-        prefer: "return=minimal",
-        body: JSON.stringify({ name: newCatName.trim() }),
-      });
-      setNewCatName("");
-      await loadAll();
-    } catch (e) {
-      alert("カテゴリ追加に失敗しました: " + e.message);
-    }
+      await sbFetch("categories", { method: "POST", prefer: "return=minimal", body: JSON.stringify({ name: newCatName.trim() }) });
+      setNewCatName(""); await loadAll();
+    } catch (e) { alert("追加に失敗しました: " + e.message); }
   }
 
   async function deleteCategory(id) {
-    try {
-      await sbFetch(`categories?id=eq.${id}`, { method: "DELETE" });
-      await loadAll();
-    } catch (e) {
-      alert("削除に失敗しました: " + e.message);
-    }
+    try { await sbFetch(`categories?id=eq.${id}`, { method: "DELETE" }); await loadAll(); }
+    catch (e) { alert("削除に失敗しました: " + e.message); }
   }
 
-  const fieldStyle = {
-    width: "100%", background: "#2c2c2e", border: "none", borderRadius: 10,
-    color: "#fff", fontSize: 15, padding: "12px 14px", boxSizing: "border-box", marginBottom: 10,
-  };
-  const labelStyle = { color: "#8e8e93", fontSize: 12, marginBottom: 4, display: "block" };
+  async function addProject() {
+    if (!newProjectName.trim()) return;
+    try {
+      await sbFetch("projects", { method: "POST", prefer: "return=minimal", body: JSON.stringify({ name: newProjectName.trim() }) });
+      setNewProjectName(""); await loadAll();
+    } catch (e) { alert("追加に失敗しました: " + e.message); }
+  }
+
+  async function deleteProject(id) {
+    try { await sbFetch(`projects?id=eq.${id}`, { method: "DELETE" }); await loadAll(); }
+    catch (e) { alert("削除に失敗しました: " + e.message); }
+  }
+
+  async function addOrder() {
+    if (!newOrderNo.trim()) return;
+    try {
+      await sbFetch("orders", { method: "POST", prefer: "return=minimal", body: JSON.stringify({ order_no: newOrderNo.trim() }) });
+      setNewOrderNo(""); await loadAll();
+    } catch (e) { alert("追加に失敗しました: " + e.message); }
+  }
+
+  async function deleteOrder(id) {
+    try { await sbFetch(`orders?id=eq.${id}`, { method: "DELETE" }); await loadAll(); }
+    catch (e) { alert("削除に失敗しました: " + e.message); }
+  }
+
+  const fs = { width: "100%", background: "#2c2c2e", border: "none", borderRadius: 10, color: "#fff", fontSize: 15, padding: "12px 14px", boxSizing: "border-box", marginBottom: 10 };
+  const ls = { color: "#8e8e93", fontSize: 12, marginBottom: 4, display: "block" };
 
   // ── 名前入力画面 ──
   if (showNameScreen) {
@@ -255,22 +255,8 @@ export default function App() {
             <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800 }}>在庫管理</h1>
             <p style={{ color: "#8e8e93", fontSize: 14, marginTop: 8 }}>あなたの名前を入力してください</p>
           </div>
-          <input
-            value={userNameInput}
-            onChange={e => setUserNameInput(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && submitName()}
-            placeholder="例：田中"
-            style={{ ...fieldStyle, fontSize: 18, padding: "16px 14px", textAlign: "center" }}
-            autoFocus
-          />
-          <button
-            onClick={submitName}
-            disabled={!userNameInput.trim()}
-            style={{
-              width: "100%", background: userNameInput.trim() ? "#0a84ff" : "#2c2c2e",
-              border: "none", borderRadius: 14, color: userNameInput.trim() ? "#fff" : "#636366",
-              fontSize: 17, fontWeight: 700, padding: "16px 0", cursor: userNameInput.trim() ? "pointer" : "default",
-            }}>
+          <input value={userNameInput} onChange={e => setUserNameInput(e.target.value)} onKeyDown={e => e.key === "Enter" && submitName()} placeholder="例：田中" style={{ ...fs, fontSize: 18, padding: "16px 14px", textAlign: "center" }} autoFocus />
+          <button onClick={submitName} disabled={!userNameInput.trim()} style={{ width: "100%", background: userNameInput.trim() ? "#0a84ff" : "#2c2c2e", border: "none", borderRadius: 14, color: userNameInput.trim() ? "#fff" : "#636366", fontSize: 17, fontWeight: 700, padding: "16px 0", cursor: userNameInput.trim() ? "pointer" : "default" }}>
             はじめる
           </button>
         </div>
@@ -288,72 +274,46 @@ export default function App() {
             <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800 }}>在庫管理</h1>
             <div style={{ fontSize: 12, color: "#8e8e93", marginTop: 2 }}>👤 {userName}</div>
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            {isAdmin ? (
-              <button onClick={logout} style={{ background: "#ff9500", border: "none", borderRadius: 8, color: "#fff", padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
-                🔓 管理者
-              </button>
-            ) : (
-              <button onClick={() => { setPasswordInput(""); setPasswordError(false); setPendingAction(null); setShowPasswordModal(true); }} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#8e8e93", padding: "6px 12px", fontSize: 12, cursor: "pointer" }}>
-                🔒 管理者
-              </button>
-            )}
+          <div style={{ display: "flex", gap: 8 }}>
+            {isAdmin
+              ? <button onClick={() => setIsAdmin(false)} style={{ background: "#ff9500", border: "none", borderRadius: 8, color: "#fff", padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>🔓 管理者</button>
+              : <button onClick={() => { setPasswordInput(""); setPasswordError(false); setPendingAction(null); setShowPasswordModal(true); }} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#8e8e93", padding: "6px 12px", fontSize: 12, cursor: "pointer" }}>🔒 管理者</button>
+            }
             <button onClick={loadAll} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#fff", padding: "6px 12px", fontSize: 13, cursor: "pointer" }}>↻</button>
           </div>
         </div>
         <div style={{ display: "flex", gap: 4 }}>
-          {[["list","一覧"],["alert",`アラート${alertItems.length>0?" "+alertItems.length:""}`],["history","履歴"],["category","カテゴリ"]].map(([key,label])=>(
-            <button key={key} onClick={() => setTab(key)} style={{
-              flex: 1, padding: "7px 0", borderRadius: 8, border: "none", fontSize: 12, fontWeight: 700, cursor: "pointer",
-              background: tab === key ? "#0a84ff" : "#2c2c2e",
-              color: tab === key ? "#fff" : "#8e8e93",
-            }}>{label}</button>
+          {[["list","一覧"],["alert",`アラート${alertItems.length>0?" "+alertItems.length:""}`],["history","履歴"],["master","マスタ"]].map(([key,label])=>(
+            <button key={key} onClick={() => setTab(key)} style={{ flex: 1, padding: "7px 0", borderRadius: 8, border: "none", fontSize: 12, fontWeight: 700, cursor: "pointer", background: tab===key?"#0a84ff":"#2c2c2e", color: tab===key?"#fff":"#8e8e93" }}>{label}</button>
           ))}
         </div>
       </div>
 
       <div style={{ padding: "16px 16px 100px" }}>
         {loading && <div style={{ textAlign: "center", color: "#8e8e93", padding: 40 }}>読み込み中...</div>}
-        {error && (
-          <div style={{ background: "#3a1c1c", border: "1px solid #ff3b30", borderRadius: 12, padding: 16, marginBottom: 16, color: "#ff3b30", fontSize: 13 }}>
-            {error}
-            <button onClick={loadAll} style={{ display: "block", marginTop: 8, background: "#ff3b30", border: "none", borderRadius: 8, color: "#fff", padding: "6px 14px", cursor: "pointer" }}>再試行</button>
-          </div>
-        )}
+        {error && <div style={{ background: "#3a1c1c", border: "1px solid #ff3b30", borderRadius: 12, padding: 16, marginBottom: 16, color: "#ff3b30", fontSize: 13 }}>{error}<button onClick={loadAll} style={{ display: "block", marginTop: 8, background: "#ff3b30", border: "none", borderRadius: 8, color: "#fff", padding: "6px 14px", cursor: "pointer" }}>再試行</button></div>}
 
         {/* 一覧タブ */}
         {!loading && tab === "list" && (
           <>
-            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-              <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="商品名・SKUで検索" style={{ ...fieldStyle, marginBottom: 0, flex: 1 }} />
-            </div>
+            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="商品名・SKUで検索" style={{ ...fs, marginBottom: 12 }} />
             <div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 14, paddingBottom: 4 }}>
               {["すべて", ...categories.map(c=>c.name)].map(cat=>(
-                <button key={cat} onClick={()=>setFilterCat(cat)} style={{
-                  whiteSpace: "nowrap", padding: "6px 14px", borderRadius: 999, border: "none", fontSize: 13, cursor: "pointer",
-                  background: filterCat === cat ? "#0a84ff" : "#2c2c2e",
-                  color: filterCat === cat ? "#fff" : "#8e8e93",
-                }}>{cat}</button>
+                <button key={cat} onClick={()=>setFilterCat(cat)} style={{ whiteSpace: "nowrap", padding: "6px 14px", borderRadius: 999, border: "none", fontSize: 13, cursor: "pointer", background: filterCat===cat?"#0a84ff":"#2c2c2e", color: filterCat===cat?"#fff":"#8e8e93" }}>{cat}</button>
               ))}
             </div>
             <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-              <div style={{ background: "#1c1c1e", borderRadius: 12, padding: "10px 16px", flex: 1, textAlign: "center" }}>
-                <div style={{ fontSize: 22, fontWeight: 800 }}>{items.length}</div>
-                <div style={{ fontSize: 11, color: "#8e8e93" }}>総商品数</div>
-              </div>
-              <div style={{ background: "#1c1c1e", borderRadius: 12, padding: "10px 16px", flex: 1, textAlign: "center" }}>
-                <div style={{ fontSize: 22, fontWeight: 800, color: "#ff3b30" }}>{items.filter(i=>i.stock===0).length}</div>
-                <div style={{ fontSize: 11, color: "#8e8e93" }}>在庫切れ</div>
-              </div>
-              <div style={{ background: "#1c1c1e", borderRadius: 12, padding: "10px 16px", flex: 1, textAlign: "center" }}>
-                <div style={{ fontSize: 22, fontWeight: 800, color: "#ff9500" }}>{items.filter(i=>i.stock>0&&i.stock<=LOW_STOCK_THRESHOLD).length}</div>
-                <div style={{ fontSize: 11, color: "#8e8e93" }}>残少</div>
-              </div>
+              {[["総商品数", items.length, "#fff"], ["在庫切れ", items.filter(i=>i.stock===0).length, "#ff3b30"], ["残少", items.filter(i=>i.stock>0&&i.stock<=LOW_STOCK_THRESHOLD).length, "#ff9500"]].map(([label, val, color])=>(
+                <div key={label} style={{ background: "#1c1c1e", borderRadius: 12, padding: "10px 16px", flex: 1, textAlign: "center" }}>
+                  <div style={{ fontSize: 22, fontWeight: 800, color }}>{val}</div>
+                  <div style={{ fontSize: 11, color: "#8e8e93" }}>{label}</div>
+                </div>
+              ))}
             </div>
             {filtered.length === 0 && <div style={{ textAlign: "center", color: "#8e8e93", padding: 40 }}>商品がありません</div>}
             {filtered.map(item => (
               <div key={item.id} style={{ background: "#1c1c1e", borderRadius: 14, padding: "14px 16px", marginBottom: 10 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
                   <div>
                     <div style={{ fontWeight: 700, fontSize: 16 }}>{item.name}</div>
                     {item.sku && <div style={{ fontSize: 12, color: "#8e8e93" }}>SKU: {item.sku}</div>}
@@ -362,10 +322,12 @@ export default function App() {
                   <StatusBadge stock={item.stock} />
                 </div>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <button onClick={() => adjustStock(item, -1)} style={{ width: 36, height: 36, borderRadius: "50%", background: "#2c2c2e", border: "none", color: "#fff", fontSize: 20, cursor: "pointer" }}>−</button>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <button onClick={() => { setStockModal({ item, direction: "out" }); setStockForm({ quantity: 1, order_no: "", project_name: "" }); }}
+                      style={{ padding: "8px 16px", borderRadius: 10, background: "#2c2c2e", border: "none", color: "#ff3b30", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>出庫</button>
                     <span style={{ fontSize: 22, fontWeight: 800 }}>{item.stock}<span style={{ fontSize: 13, color: "#8e8e93", marginLeft: 4 }}>{item.unit}</span></span>
-                    <button onClick={() => adjustStock(item, 1)} style={{ width: 36, height: 36, borderRadius: "50%", background: "#0a84ff", border: "none", color: "#fff", fontSize: 20, cursor: "pointer" }}>＋</button>
+                    <button onClick={() => { setStockModal({ item, direction: "in" }); setStockForm({ quantity: 1, order_no: "", project_name: "" }); }}
+                      style={{ padding: "8px 16px", borderRadius: 10, background: "#0a84ff", border: "none", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>入庫</button>
                   </div>
                   {isAdmin && (
                     <div style={{ display: "flex", gap: 6 }}>
@@ -412,16 +374,18 @@ export default function App() {
               : history.map((h, i) => (
                 <div key={i} style={{ background: "#1c1c1e", borderRadius: 12, padding: "12px 16px", marginBottom: 8 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                    <div>
+                    <div style={{ flex: 1 }}>
                       <div style={{ fontWeight: 700, fontSize: 15 }}>{h.item_name}</div>
-                      <div style={{ fontSize: 12, color: "#8e8e93", marginTop: 2 }}>👤 {h.operator}</div>
-                      <div style={{ fontSize: 12, color: "#636366", marginTop: 1 }}>{new Date(h.created_at).toLocaleString("ja-JP")}</div>
+                      <div style={{ fontSize: 12, color: "#8e8e93", marginTop: 2 }}>👤 {h.user_name}</div>
+                      {h.order_no && <div style={{ fontSize: 12, color: "#636366" }}>受注: {h.order_no}</div>}
+                      {h.project_name && <div style={{ fontSize: 12, color: "#636366" }}>案件: {h.project_name}</div>}
+                      <div style={{ fontSize: 11, color: "#48484a", marginTop: 2 }}>{new Date(h.created_at).toLocaleString("ja-JP")}</div>
                     </div>
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{ fontWeight: 800, fontSize: 20, color: h.change > 0 ? "#34c759" : "#ff3b30" }}>
-                        {h.change > 0 ? "+" : ""}{h.change}
+                    <div style={{ textAlign: "right", marginLeft: 12 }}>
+                      <div style={{ fontWeight: 800, fontSize: 20, color: h.quantity > 0 ? "#34c759" : "#ff3b30" }}>
+                        {h.quantity > 0 ? "+" : ""}{h.quantity}
                       </div>
-                      <div style={{ fontSize: 12, color: "#8e8e93" }}>残 {h.stock_after}</div>
+                      <div style={{ fontSize: 12, color: "#8e8e93" }}>{h.action}</div>
                     </div>
                   </div>
                 </div>
@@ -430,72 +394,115 @@ export default function App() {
           </>
         )}
 
-        {/* カテゴリタブ */}
-        {!loading && tab === "category" && (
+        {/* マスタタブ（カテゴリ・案件・受注番号） */}
+        {!loading && tab === "master" && (
           <>
-            <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>🏷️ カテゴリ管理</h2>
-            {isAdmin && (
-              <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-                <input value={newCatName} onChange={e=>setNewCatName(e.target.value)} placeholder="新しいカテゴリ名" style={{ ...fieldStyle, marginBottom: 0, flex: 1 }} />
-                <button onClick={addCategory} style={{ background: "#0a84ff", border: "none", borderRadius: 10, color: "#fff", padding: "0 18px", fontSize: 15, fontWeight: 700, cursor: "pointer" }}>追加</button>
-              </div>
-            )}
             {!isAdmin && (
               <div style={{ background: "#2c2c2e", borderRadius: 12, padding: 14, marginBottom: 16, color: "#8e8e93", fontSize: 13, textAlign: "center" }}>
-                🔒 カテゴリの追加・削除は管理者のみ
+                🔒 マスタの編集は管理者のみ
               </div>
             )}
-            {categories.length === 0 && <div style={{ textAlign: "center", color: "#8e8e93", padding: 20 }}>カテゴリがありません</div>}
+
+            {/* カテゴリ */}
+            <h2 style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>🏷️ カテゴリ</h2>
+            {isAdmin && (
+              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                <input value={newCatName} onChange={e=>setNewCatName(e.target.value)} placeholder="新しいカテゴリ名" style={{ ...fs, marginBottom: 0, flex: 1 }} />
+                <button onClick={addCategory} style={{ background: "#0a84ff", border: "none", borderRadius: 10, color: "#fff", padding: "0 16px", fontWeight: 700, cursor: "pointer" }}>追加</button>
+              </div>
+            )}
             {categories.map(cat => (
-              <div key={cat.id} style={{ background: "#1c1c1e", borderRadius: 12, padding: "14px 16px", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div key={cat.id} style={{ background: "#1c1c1e", borderRadius: 12, padding: "12px 16px", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontWeight: 600 }}>{cat.name}</span>
-                {isAdmin && (
-                  <button onClick={() => deleteCategory(cat.id)} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#ff3b30", padding: "6px 12px", fontSize: 13, cursor: "pointer" }}>削除</button>
-                )}
+                {isAdmin && <button onClick={() => deleteCategory(cat.id)} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#ff3b30", padding: "6px 12px", fontSize: 13, cursor: "pointer" }}>削除</button>}
               </div>
             ))}
+            {categories.length === 0 && <div style={{ color: "#8e8e93", fontSize: 13, marginBottom: 16 }}>カテゴリがありません</div>}
+
+            {/* 案件 */}
+            <h2 style={{ fontSize: 15, fontWeight: 700, margin: "20px 0 10px" }}>📁 案件</h2>
+            {isAdmin && (
+              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                <input value={newProjectName} onChange={e=>setNewProjectName(e.target.value)} placeholder="新しい案件名" style={{ ...fs, marginBottom: 0, flex: 1 }} />
+                <button onClick={addProject} style={{ background: "#0a84ff", border: "none", borderRadius: 10, color: "#fff", padding: "0 16px", fontWeight: 700, cursor: "pointer" }}>追加</button>
+              </div>
+            )}
+            {projects.map(p => (
+              <div key={p.id} style={{ background: "#1c1c1e", borderRadius: 12, padding: "12px 16px", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontWeight: 600 }}>{p.name}</span>
+                {isAdmin && <button onClick={() => deleteProject(p.id)} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#ff3b30", padding: "6px 12px", fontSize: 13, cursor: "pointer" }}>削除</button>}
+              </div>
+            ))}
+            {projects.length === 0 && <div style={{ color: "#8e8e93", fontSize: 13, marginBottom: 16 }}>案件がありません</div>}
+
+            {/* 受注番号 */}
+            <h2 style={{ fontSize: 15, fontWeight: 700, margin: "20px 0 10px" }}>🔢 受注番号</h2>
+            {isAdmin && (
+              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                <input value={newOrderNo} onChange={e=>setNewOrderNo(e.target.value)} placeholder="受注番号を入力" style={{ ...fs, marginBottom: 0, flex: 1 }} />
+                <button onClick={addOrder} style={{ background: "#0a84ff", border: "none", borderRadius: 10, color: "#fff", padding: "0 16px", fontWeight: 700, cursor: "pointer" }}>追加</button>
+              </div>
+            )}
+            {orders.map(o => (
+              <div key={o.id} style={{ background: "#1c1c1e", borderRadius: 12, padding: "12px 16px", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontWeight: 600 }}>{o.order_no}</span>
+                {isAdmin && <button onClick={() => deleteOrder(o.id)} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#ff3b30", padding: "6px 12px", fontSize: 13, cursor: "pointer" }}>削除</button>}
+              </div>
+            ))}
+            {orders.length === 0 && <div style={{ color: "#8e8e93", fontSize: 13 }}>受注番号がありません</div>}
           </>
         )}
       </div>
 
-      {/* 商品追加ボタン（管理者のみ・スマホ対応） */}
+      {/* 商品追加ボタン */}
       {tab === "list" && (
-        <button
-          onClick={() => requireAdmin(() => {
-            setAddForm({ name: "", sku: "", category: categories[0]?.name || "", stock: 0, unit: "個" });
-            setShowAdd(true);
-          })}
-          style={{
-            position: "fixed",
-            bottom: 32,
-            right: 24,
-            width: 56, height: 56,
-            borderRadius: "50%",
-            background: isAdmin ? "#0a84ff" : "#636366",
-            border: "none", color: "#fff", fontSize: 28,
-            cursor: "pointer",
-            boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
-            zIndex: 20,
-          }}>
+        <button onClick={() => requireAdmin(() => { setAddForm({ name: "", sku: "", category: categories[0]?.name || "", stock: 0, unit: "個" }); setShowAdd(true); })}
+          style={{ position: "fixed", bottom: 32, right: 24, width: 56, height: 56, borderRadius: "50%", background: isAdmin ? "#0a84ff" : "#636366", border: "none", color: "#fff", fontSize: 28, cursor: "pointer", boxShadow: "0 4px 16px rgba(0,0,0,0.4)", zIndex: 20 }}>
           ＋
         </button>
       )}
 
-      {/* パスワード入力モーダル */}
+      {/* 入出庫モーダル */}
+      <Modal open={!!stockModal} onClose={() => setStockModal(null)}>
+        {stockModal && (
+          <>
+            <h2 style={{ margin: "0 0 4px", fontSize: 18, fontWeight: 800 }}>
+              {stockModal.direction === "in" ? "🟢 入庫" : "🔴 出庫"}
+            </h2>
+            <div style={{ color: "#8e8e93", fontSize: 14, marginBottom: 16 }}>{stockModal.item.name}</div>
+
+            <label style={ls}>個数 *</label>
+            <input type="number" min="1" value={stockForm.quantity} onChange={e=>setStockForm(f=>({...f,quantity:e.target.value}))} style={fs} />
+
+            <label style={ls}>受注番号</label>
+            <select value={stockForm.order_no} onChange={e=>setStockForm(f=>({...f,order_no:e.target.value}))} style={fs}>
+              <option value="">選択なし</option>
+              {orders.map(o=><option key={o.id} value={o.order_no}>{o.order_no}</option>)}
+            </select>
+
+            <label style={ls}>案件名</label>
+            <select value={stockForm.project_name} onChange={e=>setStockForm(f=>({...f,project_name:e.target.value}))} style={fs}>
+              <option value="">選択なし</option>
+              {projects.map(p=><option key={p.id} value={p.name}>{p.name}</option>)}
+            </select>
+
+            <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+              <button onClick={() => setStockModal(null)} style={{ flex: 1, background: "#2c2c2e", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>キャンセル</button>
+              <button onClick={executeStock} style={{ flex: 1, background: stockModal.direction==="in"?"#0a84ff":"#ff3b30", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>
+                {stockModal.direction === "in" ? "入庫する" : "出庫する"}
+              </button>
+            </div>
+          </>
+        )}
+      </Modal>
+
+      {/* パスワードモーダル */}
       <Modal open={showPasswordModal} onClose={() => setShowPasswordModal(false)}>
         <h2 style={{ margin: "0 0 8px", fontSize: 18, fontWeight: 800 }}>🔒 管理者ログイン</h2>
         <p style={{ color: "#8e8e93", fontSize: 13, marginBottom: 16 }}>パスワードを入力してください</p>
-        <input
-          type="password"
-          value={passwordInput}
-          onChange={e => { setPasswordInput(e.target.value); setPasswordError(false); }}
-          onKeyDown={e => e.key === "Enter" && submitPassword()}
-          placeholder="パスワード"
-          style={{ ...fieldStyle, border: passwordError ? "1px solid #ff3b30" : "none" }}
-          autoFocus
-        />
+        <input type="password" value={passwordInput} onChange={e=>{setPasswordInput(e.target.value);setPasswordError(false);}} onKeyDown={e=>e.key==="Enter"&&submitPassword()} placeholder="パスワード" style={{ ...fs, border: passwordError?"1px solid #ff3b30":"none" }} autoFocus />
         {passwordError && <p style={{ color: "#ff3b30", fontSize: 13, margin: "-6px 0 10px" }}>パスワードが違います</p>}
-        <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+        <div style={{ display: "flex", gap: 10 }}>
           <button onClick={() => setShowPasswordModal(false)} style={{ flex: 1, background: "#2c2c2e", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>キャンセル</button>
           <button onClick={submitPassword} style={{ flex: 1, background: "#0a84ff", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>ログイン</button>
         </div>
@@ -504,26 +511,20 @@ export default function App() {
       {/* 商品追加モーダル */}
       <Modal open={showAdd} onClose={() => setShowAdd(false)}>
         <h2 style={{ margin: "0 0 16px", fontSize: 18, fontWeight: 800 }}>商品を追加</h2>
-        <label style={labelStyle}>商品名 *</label>
-        <input value={addForm.name} onChange={e=>setAddForm(f=>({...f,name:e.target.value}))} placeholder="例：リレー" style={fieldStyle} />
-        <label style={labelStyle}>在庫番号（SKU）</label>
-        <input value={addForm.sku} onChange={e=>setAddForm(f=>({...f,sku:e.target.value}))} placeholder="例：REL-001" style={fieldStyle} />
-        <label style={labelStyle}>カテゴリ</label>
-        <select value={addForm.category} onChange={e=>setAddForm(f=>({...f,category:e.target.value}))} style={fieldStyle}>
+        <label style={ls}>商品名 *</label>
+        <input value={addForm.name} onChange={e=>setAddForm(f=>({...f,name:e.target.value}))} placeholder="例：リレー" style={fs} />
+        <label style={ls}>在庫番号（SKU）</label>
+        <input value={addForm.sku} onChange={e=>setAddForm(f=>({...f,sku:e.target.value}))} placeholder="例：REL-001" style={fs} />
+        <label style={ls}>カテゴリ</label>
+        <select value={addForm.category} onChange={e=>setAddForm(f=>({...f,category:e.target.value}))} style={fs}>
           <option value="">選択なし</option>
           {categories.map(c=><option key={c.id} value={c.name}>{c.name}</option>)}
         </select>
         <div style={{ display: "flex", gap: 8 }}>
-          <div style={{ flex: 2 }}>
-            <label style={labelStyle}>在庫数</label>
-            <input type="number" value={addForm.stock} onChange={e=>setAddForm(f=>({...f,stock:e.target.value}))} style={fieldStyle} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <label style={labelStyle}>単位</label>
-            <input value={addForm.unit} onChange={e=>setAddForm(f=>({...f,unit:e.target.value}))} placeholder="個" style={fieldStyle} />
-          </div>
+          <div style={{ flex: 2 }}><label style={ls}>在庫数</label><input type="number" value={addForm.stock} onChange={e=>setAddForm(f=>({...f,stock:e.target.value}))} style={fs} /></div>
+          <div style={{ flex: 1 }}><label style={ls}>単位</label><input value={addForm.unit} onChange={e=>setAddForm(f=>({...f,unit:e.target.value}))} placeholder="個" style={fs} /></div>
         </div>
-        <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+        <div style={{ display: "flex", gap: 10 }}>
           <button onClick={() => setShowAdd(false)} style={{ flex: 1, background: "#2c2c2e", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>閉じる</button>
           <button onClick={saveAdd} style={{ flex: 1, background: "#0a84ff", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>追加する</button>
         </div>
@@ -532,26 +533,20 @@ export default function App() {
       {/* 編集モーダル */}
       <Modal open={!!editItem} onClose={() => setEditItem(null)}>
         <h2 style={{ margin: "0 0 16px", fontSize: 18, fontWeight: 800 }}>商品を編集</h2>
-        <label style={labelStyle}>商品名</label>
-        <input value={editItem?.name||""} onChange={e=>setEditItem(f=>({...f,name:e.target.value}))} style={fieldStyle} />
-        <label style={labelStyle}>在庫番号（SKU）</label>
-        <input value={editItem?.sku||""} onChange={e=>setEditItem(f=>({...f,sku:e.target.value}))} style={fieldStyle} />
-        <label style={labelStyle}>カテゴリ</label>
-        <select value={editItem?.category||""} onChange={e=>setEditItem(f=>({...f,category:e.target.value}))} style={fieldStyle}>
+        <label style={ls}>商品名</label>
+        <input value={editItem?.name||""} onChange={e=>setEditItem(f=>({...f,name:e.target.value}))} style={fs} />
+        <label style={ls}>在庫番号（SKU）</label>
+        <input value={editItem?.sku||""} onChange={e=>setEditItem(f=>({...f,sku:e.target.value}))} style={fs} />
+        <label style={ls}>カテゴリ</label>
+        <select value={editItem?.category||""} onChange={e=>setEditItem(f=>({...f,category:e.target.value}))} style={fs}>
           <option value="">選択なし</option>
           {categories.map(c=><option key={c.id} value={c.name}>{c.name}</option>)}
         </select>
         <div style={{ display: "flex", gap: 8 }}>
-          <div style={{ flex: 2 }}>
-            <label style={labelStyle}>在庫数</label>
-            <input type="number" value={editItem?.stock||0} onChange={e=>setEditItem(f=>({...f,stock:e.target.value}))} style={fieldStyle} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <label style={labelStyle}>単位</label>
-            <input value={editItem?.unit||""} onChange={e=>setEditItem(f=>({...f,unit:e.target.value}))} style={fieldStyle} />
-          </div>
+          <div style={{ flex: 2 }}><label style={ls}>在庫数</label><input type="number" value={editItem?.stock||0} onChange={e=>setEditItem(f=>({...f,stock:e.target.value}))} style={fs} /></div>
+          <div style={{ flex: 1 }}><label style={ls}>単位</label><input value={editItem?.unit||""} onChange={e=>setEditItem(f=>({...f,unit:e.target.value}))} style={fs} /></div>
         </div>
-        <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+        <div style={{ display: "flex", gap: 10 }}>
           <button onClick={() => setEditItem(null)} style={{ flex: 1, background: "#2c2c2e", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>閉じる</button>
           <button onClick={saveEdit} style={{ flex: 1, background: "#0a84ff", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>保存する</button>
         </div>
@@ -560,7 +555,7 @@ export default function App() {
       {/* 削除確認モーダル */}
       <Modal open={!!deleteItem} onClose={() => setDeleteItem(null)}>
         <h2 style={{ margin: "0 0 8px", fontSize: 18, fontWeight: 800 }}>削除の確認</h2>
-        <p style={{ color: "#8e8e93", fontSize: 14, marginBottom: 20 }}>「{deleteItem?.name}」を削除しますか？この操作は元に戻せません。</p>
+        <p style={{ color: "#8e8e93", fontSize: 14, marginBottom: 20 }}>「{deleteItem?.name}」を削除しますか？</p>
         <div style={{ display: "flex", gap: 10 }}>
           <button onClick={() => setDeleteItem(null)} style={{ flex: 1, background: "#2c2c2e", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>キャンセル</button>
           <button onClick={confirmDelete} style={{ flex: 1, background: "#ff3b30", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>削除する</button>
