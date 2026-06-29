@@ -127,7 +127,7 @@ export default function App() {
     const matchCat = filterCat === "すべて" || it.category === filterCat;
     const matchSearch = !search || it.name.includes(search) || (it.sku || "").includes(search);
     return matchCat && matchSearch;
-  }), [items, search, filterCat]);
+  }).sort((a, b) => a.name.localeCompare(b.name, "ja")), [items, search, filterCat]);
 
   const alertItems = items.filter(it => it.stock <= LOW_STOCK_THRESHOLD);
 
