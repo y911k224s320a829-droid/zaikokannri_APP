@@ -22,11 +22,17 @@ async function sbFetch(path, options = {}) {
   try { return JSON.parse(text); } catch { return null; }
 }
 
-const LOW_STOCK_THRESHOLD = 5;
+const LOW_STOCK_THRESHOLD = 5; // 閾値未設定商品のデフォルト
 
-function StatusBadge({ stock }) {
+// 商品ごとのアラート閾値（未設定ならデフォルト）
+function itemThreshold(item) {
+  const t = item.alert_threshold;
+  return (t === null || t === undefined || t === "") ? LOW_STOCK_THRESHOLD : Number(t);
+}
+
+function StatusBadge({ stock, threshold = LOW_STOCK_THRESHOLD }) {
   if (stock === 0) return <span style={{ background: "#ff3b30", color: "#fff", borderRadius: 999, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>在庫切れ</span>;
-  if (stock <= LOW_STOCK_THRESHOLD) return <span style={{ background: "#ff9500", color: "#fff", borderRadius: 999, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>残少</span>;
+  if (stock <= threshold) return <span style={{ background: "#ff9500", color: "#fff", borderRadius: 999, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>残少</span>;
   return <span style={{ background: "#34c759", color: "#fff", borderRadius: 999, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>在庫あり</span>;
 }
 
@@ -60,7 +66,7 @@ export default function App() {
   const [showAdd, setShowAdd] = useState(false);
   const [editItem, setEditItem] = useState(null);
   const [deleteItem, setDeleteItem] = useState(null);
-  const [addForm, setAddForm] = useState({ name: "", sku: "", category: "", stock: 0, unit: "個" });
+  const [addForm, setAddForm] = useState({ name: "", sku: "", category: "", stock: 0, unit: "個", alert_threshold: LOW_STOCK_THRESHOLD });
 
   // 入出庫モーダル
   const [stockModal, setStockModal] = useState(null); // { item, direction: "in"|"out" }
@@ -70,6 +76,8 @@ export default function App() {
   const [newCatName, setNewCatName] = useState("");
   const [newProjectName, setNewProjectName] = useState("");
   const [newOrderNo, setNewOrderNo] = useState("");
+
+  const [deleteLog, setDeleteLog] = useState(null); // 削除対象の履歴
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
@@ -129,7 +137,7 @@ export default function App() {
     return matchCat && matchSearch;
   }).sort((a, b) => a.name.localeCompare(b.name, "ja")), [items, search, filterCat]);
 
-  const alertItems = items.filter(it => it.stock <= LOW_STOCK_THRESHOLD);
+  const alertItems = items.filter(it => it.stock <= itemThreshold(it));
 
   // 入出庫実行
   async function executeStock() {
@@ -178,10 +186,10 @@ export default function App() {
     try {
       await sbFetch("inventory", {
         method: "POST", prefer: "return=minimal",
-        body: JSON.stringify({ name: addForm.name.trim(), sku: addForm.sku.trim() || null, category: addForm.category || null, stock: Number(addForm.stock) || 0, unit: addForm.unit || "個" }),
+        body: JSON.stringify({ name: addForm.name.trim(), sku: addForm.sku.trim() || null, category: addForm.category || null, stock: Number(addForm.stock) || 0, unit: addForm.unit || "個", alert_threshold: Number(addForm.alert_threshold) || 0 }),
       });
       setShowAdd(false);
-      setAddForm({ name: "", sku: "", category: "", stock: 0, unit: "個" });
+      setAddForm({ name: "", sku: "", category: "", stock: 0, unit: "個", alert_threshold: LOW_STOCK_THRESHOLD });
       await loadAll();
     } catch (e) { alert("追加に失敗しました: " + e.message); }
   }
@@ -190,7 +198,7 @@ export default function App() {
     try {
       await sbFetch(`inventory?id=eq.${editItem.id}`, {
         method: "PATCH",
-        body: JSON.stringify({ name: editItem.name, sku: editItem.sku, category: editItem.category, stock: Number(editItem.stock), unit: editItem.unit }),
+        body: JSON.stringify({ name: editItem.name, sku: editItem.sku, category: editItem.category, stock: Number(editItem.stock), unit: editItem.unit, alert_threshold: Number(editItem.alert_threshold) || 0 }),
       });
       setEditItem(null); await loadAll();
     } catch (e) { alert("更新に失敗しました: " + e.message); }
@@ -201,6 +209,14 @@ export default function App() {
       await sbFetch(`inventory?id=eq.${deleteItem.id}`, { method: "DELETE" });
       setDeleteItem(null); await loadAll();
     } catch (e) { alert("削除に失敗しました: " + e.message); }
+  }
+
+  async function confirmDeleteLog() {
+    try {
+      await sbFetch(`inventory_log?id=eq.${deleteLog.id}`, { method: "DELETE" });
+      setHistory(prev => prev.filter(h => h.id !== deleteLog.id));
+      setDeleteLog(null);
+    } catch (e) { alert("履歴の削除に失敗しました: " + e.message); }
   }
 
   async function addCategory() {
@@ -303,7 +319,7 @@ export default function App() {
               ))}
             </div>
             <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-              {[["総商品数", items.length, "#fff"], ["在庫切れ", items.filter(i=>i.stock===0).length, "#ff3b30"], ["残少", items.filter(i=>i.stock>0&&i.stock<=LOW_STOCK_THRESHOLD).length, "#ff9500"]].map(([label, val, color])=>(
+              {[["総商品数", items.length, "#fff"], ["在庫切れ", items.filter(i=>i.stock===0).length, "#ff3b30"], ["残少", items.filter(i=>i.stock>0&&i.stock<=itemThreshold(i)).length, "#ff9500"]].map(([label, val, color])=>(
                 <div key={label} style={{ background: "#1c1c1e", borderRadius: 12, padding: "10px 16px", flex: 1, textAlign: "center" }}>
                   <div style={{ fontSize: 22, fontWeight: 800, color }}>{val}</div>
                   <div style={{ fontSize: 11, color: "#8e8e93" }}>{label}</div>
@@ -319,7 +335,7 @@ export default function App() {
                     {item.sku && <div style={{ fontSize: 12, color: "#8e8e93" }}>SKU: {item.sku}</div>}
                     {item.category && <div style={{ fontSize: 12, color: "#636366" }}>{item.category}</div>}
                   </div>
-                  <StatusBadge stock={item.stock} />
+                  <StatusBadge stock={item.stock} threshold={itemThreshold(item)} />
                 </div>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -356,7 +372,7 @@ export default function App() {
                     </div>
                     <div style={{ textAlign: "right" }}>
                       <div style={{ fontSize: 22, fontWeight: 800, color: item.stock===0?"#ff3b30":"#ff9500" }}>{item.stock}<span style={{ fontSize: 13, marginLeft: 4 }}>{item.unit}</span></div>
-                      <StatusBadge stock={item.stock} />
+                      <StatusBadge stock={item.stock} threshold={itemThreshold(item)} />
                     </div>
                   </div>
                 </div>
@@ -369,6 +385,11 @@ export default function App() {
         {!loading && tab === "history" && (
           <>
             <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>📋 入出庫履歴</h2>
+            {!isAdmin && (
+              <div style={{ background: "#2c2c2e", borderRadius: 12, padding: 12, marginBottom: 12, color: "#8e8e93", fontSize: 12, textAlign: "center" }}>
+                🔒 履歴の削除は管理者ログイン後に可能です
+              </div>
+            )}
             {history.length === 0
               ? <div style={{ textAlign: "center", color: "#8e8e93", padding: 40 }}>履歴がありません</div>
               : history.map((h, i) => (
@@ -386,6 +407,9 @@ export default function App() {
                         {h.quantity > 0 ? "+" : ""}{h.quantity}
                       </div>
                       <div style={{ fontSize: 12, color: "#8e8e93" }}>{h.action}</div>
+                      {isAdmin && h.id != null && (
+                        <button onClick={() => setDeleteLog(h)} style={{ marginTop: 8, background: "#2c2c2e", border: "none", borderRadius: 8, color: "#ff3b30", padding: "4px 10px", fontSize: 12, cursor: "pointer" }}>削除</button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -456,7 +480,7 @@ export default function App() {
 
       {/* 商品追加ボタン */}
       {tab === "list" && (
-        <button onClick={() => requireAdmin(() => { setAddForm({ name: "", sku: "", category: categories[0]?.name || "", stock: 0, unit: "個" }); setShowAdd(true); })}
+        <button onClick={() => requireAdmin(() => { setAddForm({ name: "", sku: "", category: categories[0]?.name || "", stock: 0, unit: "個", alert_threshold: LOW_STOCK_THRESHOLD }); setShowAdd(true); })}
           style={{ position: "fixed", bottom: 32, right: 24, width: 56, height: 56, borderRadius: "50%", background: isAdmin ? "#0a84ff" : "#636366", border: "none", color: "#fff", fontSize: 28, cursor: "pointer", boxShadow: "0 4px 16px rgba(0,0,0,0.4)", zIndex: 20 }}>
           ＋
         </button>
@@ -524,6 +548,8 @@ export default function App() {
           <div style={{ flex: 2 }}><label style={ls}>在庫数</label><input type="number" value={addForm.stock} onChange={e=>setAddForm(f=>({...f,stock:e.target.value}))} style={fs} /></div>
           <div style={{ flex: 1 }}><label style={ls}>単位</label><input value={addForm.unit} onChange={e=>setAddForm(f=>({...f,unit:e.target.value}))} placeholder="個" style={fs} /></div>
         </div>
+        <label style={ls}>アラート閾値（この数量以下で「残少」）</label>
+        <input type="number" min="0" value={addForm.alert_threshold} onChange={e=>setAddForm(f=>({...f,alert_threshold:e.target.value}))} placeholder="例：5" style={fs} />
         <div style={{ display: "flex", gap: 10 }}>
           <button onClick={() => setShowAdd(false)} style={{ flex: 1, background: "#2c2c2e", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>閉じる</button>
           <button onClick={saveAdd} style={{ flex: 1, background: "#0a84ff", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>追加する</button>
@@ -546,9 +572,23 @@ export default function App() {
           <div style={{ flex: 2 }}><label style={ls}>在庫数</label><input type="number" value={editItem?.stock||0} onChange={e=>setEditItem(f=>({...f,stock:e.target.value}))} style={fs} /></div>
           <div style={{ flex: 1 }}><label style={ls}>単位</label><input value={editItem?.unit||""} onChange={e=>setEditItem(f=>({...f,unit:e.target.value}))} style={fs} /></div>
         </div>
+        <label style={ls}>アラート閾値（この数量以下で「残少」）</label>
+        <input type="number" min="0" value={editItem?.alert_threshold ?? LOW_STOCK_THRESHOLD} onChange={e=>setEditItem(f=>({...f,alert_threshold:e.target.value}))} style={fs} />
         <div style={{ display: "flex", gap: 10 }}>
           <button onClick={() => setEditItem(null)} style={{ flex: 1, background: "#2c2c2e", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>閉じる</button>
           <button onClick={saveEdit} style={{ flex: 1, background: "#0a84ff", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>保存する</button>
+        </div>
+      </Modal>
+
+      {/* 履歴削除確認モーダル */}
+      <Modal open={!!deleteLog} onClose={() => setDeleteLog(null)}>
+        <h2 style={{ margin: "0 0 8px", fontSize: 18, fontWeight: 800 }}>履歴の削除</h2>
+        <p style={{ color: "#8e8e93", fontSize: 14, marginBottom: 20 }}>
+          {deleteLog && `「${deleteLog.item_name}」${deleteLog.action} ${deleteLog.quantity > 0 ? "+" : ""}${deleteLog.quantity} の履歴を削除しますか？`}
+        </p>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={() => setDeleteLog(null)} style={{ flex: 1, background: "#2c2c2e", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>キャンセル</button>
+          <button onClick={confirmDeleteLog} style={{ flex: 1, background: "#ff3b30", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>削除する</button>
         </div>
       </Modal>
 
