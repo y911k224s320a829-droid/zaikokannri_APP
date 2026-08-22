@@ -60,6 +60,7 @@ export default function App() {
   const [history, setHistory] = useState([]);
   const [search, setSearch] = useState("");
   const [filterCat, setFilterCat] = useState("すべて");
+  const [stockFilter, setStockFilter] = useState("all"); // all | empty | low
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -134,8 +135,11 @@ export default function App() {
   const filtered = useMemo(() => items.filter(it => {
     const matchCat = filterCat === "すべて" || it.category === filterCat;
     const matchSearch = !search || it.name.includes(search) || (it.sku || "").includes(search);
-    return matchCat && matchSearch;
-  }).sort((a, b) => a.name.localeCompare(b.name, "ja")), [items, search, filterCat]);
+    const matchStock = stockFilter === "all"
+      || (stockFilter === "empty" && it.stock === 0)
+      || (stockFilter === "low" && it.stock > 0 && it.stock <= itemThreshold(it));
+    return matchCat && matchSearch && matchStock;
+  }).sort((a, b) => a.name.localeCompare(b.name, "ja")), [items, search, filterCat, stockFilter]);
 
   const alertItems = items.filter(it => it.stock <= itemThreshold(it));
 
@@ -319,13 +323,25 @@ export default function App() {
               ))}
             </div>
             <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-              {[["総商品数", items.length, "#fff"], ["在庫切れ", items.filter(i=>i.stock===0).length, "#ff3b30"], ["残少", items.filter(i=>i.stock>0&&i.stock<=itemThreshold(i)).length, "#ff9500"]].map(([label, val, color])=>(
-                <div key={label} style={{ background: "#1c1c1e", borderRadius: 12, padding: "10px 16px", flex: 1, textAlign: "center" }}>
-                  <div style={{ fontSize: 22, fontWeight: 800, color }}>{val}</div>
-                  <div style={{ fontSize: 11, color: "#8e8e93" }}>{label}</div>
-                </div>
-              ))}
+              {[["総商品数", items.length, "#fff", "all"], ["在庫切れ", items.filter(i=>i.stock===0).length, "#ff3b30", "empty"], ["残少", items.filter(i=>i.stock>0&&i.stock<=itemThreshold(i)).length, "#ff9500", "low"]].map(([label, val, color, key])=>{
+                const active = stockFilter === key;
+                return (
+                  <button key={label} onClick={() => setStockFilter(active && key !== "all" ? "all" : key)}
+                    style={{ background: active ? "#0a2540" : "#1c1c1e", border: active ? "1.5px solid #0a84ff" : "1.5px solid transparent", borderRadius: 12, padding: "10px 16px", flex: 1, textAlign: "center", cursor: "pointer", boxSizing: "border-box" }}>
+                    <div style={{ fontSize: 22, fontWeight: 800, color }}>{val}</div>
+                    <div style={{ fontSize: 11, color: "#8e8e93" }}>{label}</div>
+                  </button>
+                );
+              })}
             </div>
+            {stockFilter !== "all" && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#1c1c1e", borderRadius: 10, padding: "8px 14px", marginBottom: 14 }}>
+                <span style={{ fontSize: 13, color: "#8e8e93" }}>
+                  絞り込み中：<span style={{ color: "#fff", fontWeight: 700 }}>{stockFilter === "empty" ? "在庫切れ" : "残少"}</span>（{filtered.length}件）
+                </span>
+                <button onClick={() => setStockFilter("all")} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#0a84ff", padding: "5px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>解除</button>
+              </div>
+            )}
             {filtered.length === 0 && <div style={{ textAlign: "center", color: "#8e8e93", padding: 40 }}>商品がありません</div>}
             {filtered.map(item => (
               <div key={item.id} style={{ background: "#1c1c1e", borderRadius: 14, padding: "14px 16px", marginBottom: 10 }}>
