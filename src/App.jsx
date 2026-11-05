@@ -36,6 +36,35 @@ function StatusBadge({ stock, threshold = LOW_STOCK_THRESHOLD }) {
   return <span style={{ background: "#34c759", color: "#fff", borderRadius: 999, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>在庫あり</span>;
 }
 
+// 注文中かどうか（注文数が入っていれば注文中）
+function isOrdered(item) {
+  return item.ordered_qty !== null && item.ordered_qty !== undefined && Number(item.ordered_qty) > 0;
+}
+
+function formatOrderedDate(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+// 「📦 注文中 10個（11/5 髙橋）」の表示
+function OrderedInfo({ item, onCancel }) {
+  if (!isOrdered(item)) return null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#0a2540", border: "1px solid #0a84ff", borderRadius: 10, padding: "6px 10px", marginBottom: 10 }}>
+      <span style={{ fontSize: 13, color: "#64d2ff", fontWeight: 700 }}>
+        📦 注文中 {item.ordered_qty}{item.unit || ""}
+        <span style={{ fontWeight: 400, color: "#8e8e93", marginLeft: 6 }}>
+          （{formatOrderedDate(item.ordered_at)}{item.ordered_by ? " " + item.ordered_by : ""}）
+        </span>
+      </span>
+      {onCancel && (
+        <button onClick={onCancel} style={{ background: "transparent", border: "none", color: "#8e8e93", fontSize: 12, cursor: "pointer", padding: "2px 4px" }}>取消</button>
+      )}
+    </div>
+  );
+}
+
 function Modal({ open, onClose, children }) {
   if (!open) return null;
   return (
@@ -60,7 +89,7 @@ export default function App() {
   const [history, setHistory] = useState([]);
   const [search, setSearch] = useState("");
   const [filterCat, setFilterCat] = useState("すべて");
-  const [stockFilter, setStockFilter] = useState("all"); // all | empty | low
+  const [stockFilter, setStockFilter] = useState("all"); // all | empty | low | ordered
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -79,6 +108,11 @@ export default function App() {
   const [newOrderNo, setNewOrderNo] = useState("");
 
   const [deleteLog, setDeleteLog] = useState(null); // 削除対象の履歴
+
+  // 注文中モーダル
+  const [orderModal, setOrderModal] = useState(null); // 対象の商品
+  const [orderQty, setOrderQty] = useState(1);
+  const [cancelOrderItem, setCancelOrderItem] = useState(null); // 注文取消の確認対象
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
@@ -137,11 +171,60 @@ export default function App() {
     const matchSearch = !search || it.name.includes(search) || (it.sku || "").includes(search);
     const matchStock = stockFilter === "all"
       || (stockFilter === "empty" && it.stock === 0)
-      || (stockFilter === "low" && it.stock > 0 && it.stock <= itemThreshold(it));
+      || (stockFilter === "low" && it.stock > 0 && it.stock <= itemThreshold(it))
+      || (stockFilter === "ordered" && isOrdered(it));
     return matchCat && matchSearch && matchStock;
   }).sort((a, b) => a.name.localeCompare(b.name, "ja")), [items, search, filterCat, stockFilter]);
 
   const alertItems = items.filter(it => it.stock <= itemThreshold(it));
+  const alertNotOrdered = alertItems.filter(it => !isOrdered(it));
+  const alertOrdered = alertItems.filter(it => isOrdered(it));
+
+  // 注文中にする
+  async function saveOrder() {
+    const item = orderModal;
+    const qty = Number(orderQty);
+    if (!qty || qty <= 0) { alert("注文数を入力してください"); return; }
+    const patch = { ordered_qty: qty, ordered_at: new Date().toISOString(), ordered_by: userName };
+    try {
+      await sbFetch(`inventory?id=eq.${item.id}`, { method: "PATCH", body: JSON.stringify(patch) });
+      setItems(prev => prev.map(it => it.id === item.id ? { ...it, ...patch } : it));
+      setOrderModal(null);
+    } catch (e) { alert("注文中の登録に失敗しました: " + e.message); }
+  }
+
+  // アラートタブの商品カード
+  function renderAlertCard(item) {
+    return (
+      <div key={item.id} style={{ background: "#1c1c1e", borderRadius: 14, padding: 16, marginBottom: 10, borderLeft: `4px solid ${item.stock===0?"#ff3b30":"#ff9500"}` }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: isOrdered(item) ? 10 : 0 }}>
+          <div>
+            <div style={{ fontWeight: 700 }}>{item.name}</div>
+            {item.sku && <div style={{ fontSize: 12, color: "#8e8e93" }}>SKU: {item.sku}</div>}
+            {!isOrdered(item) && (
+              <button onClick={() => { setOrderModal(item); setOrderQty(1); }} style={{ marginTop: 8, background: "#2c2c2e", border: "none", borderRadius: 8, color: "#64d2ff", padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>📦 注文中にする</button>
+            )}
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 22, fontWeight: 800, color: item.stock===0?"#ff3b30":"#ff9500" }}>{item.stock}<span style={{ fontSize: 13, marginLeft: 4 }}>{item.unit}</span></div>
+            <StatusBadge stock={item.stock} threshold={itemThreshold(item)} />
+          </div>
+        </div>
+        <OrderedInfo item={item} onCancel={() => setCancelOrderItem(item)} />
+      </div>
+    );
+  }
+
+  // 注文中を取り消す
+  async function confirmCancelOrder() {
+    const item = cancelOrderItem;
+    const patch = { ordered_qty: null, ordered_at: null, ordered_by: null };
+    try {
+      await sbFetch(`inventory?id=eq.${item.id}`, { method: "PATCH", body: JSON.stringify(patch) });
+      setItems(prev => prev.map(it => it.id === item.id ? { ...it, ...patch } : it));
+      setCancelOrderItem(null);
+    } catch (e) { alert("取消に失敗しました: " + e.message); }
+  }
 
   // 入出庫実行
   async function executeStock() {
@@ -150,10 +233,15 @@ export default function App() {
     if (!qty || qty <= 0) { alert("個数を入力してください"); return; }
     const delta = direction === "in" ? qty : -qty;
     const newStock = Math.max(0, item.stock + delta);
+    // 入庫したら「注文中」を自動で解除
+    const clearOrder = direction === "in" && isOrdered(item);
+    const patch = clearOrder
+      ? { stock: newStock, ordered_qty: null, ordered_at: null, ordered_by: null }
+      : { stock: newStock };
     try {
       await sbFetch(`inventory?id=eq.${item.id}`, {
         method: "PATCH",
-        body: JSON.stringify({ stock: newStock }),
+        body: JSON.stringify(patch),
       });
       await sbFetch("inventory_log", {
         method: "POST",
@@ -168,7 +256,7 @@ export default function App() {
           project_name: stockForm.project_name || null,
         }),
       });
-      setItems(prev => prev.map(it => it.id === item.id ? { ...it, stock: newStock } : it));
+      setItems(prev => prev.map(it => it.id === item.id ? { ...it, ...patch } : it));
       setHistory(prev => [{
         item_name: item.name,
         action: direction === "in" ? "入庫" : "出庫",
@@ -323,11 +411,11 @@ export default function App() {
               ))}
             </div>
             <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-              {[["総商品数", items.length, "#fff", "all"], ["在庫切れ", items.filter(i=>i.stock===0).length, "#ff3b30", "empty"], ["残少", items.filter(i=>i.stock>0&&i.stock<=itemThreshold(i)).length, "#ff9500", "low"]].map(([label, val, color, key])=>{
+              {[["総商品数", items.length, "#fff", "all"], ["在庫切れ", items.filter(i=>i.stock===0).length, "#ff3b30", "empty"], ["残少", items.filter(i=>i.stock>0&&i.stock<=itemThreshold(i)).length, "#ff9500", "low"], ["注文中", items.filter(i=>isOrdered(i)).length, "#64d2ff", "ordered"]].map(([label, val, color, key])=>{
                 const active = stockFilter === key;
                 return (
                   <button key={label} onClick={() => setStockFilter(active && key !== "all" ? "all" : key)}
-                    style={{ background: active ? "#0a2540" : "#1c1c1e", border: active ? "1.5px solid #0a84ff" : "1.5px solid transparent", borderRadius: 12, padding: "10px 16px", flex: 1, textAlign: "center", cursor: "pointer", boxSizing: "border-box" }}>
+                    style={{ background: active ? "#0a2540" : "#1c1c1e", border: active ? "1.5px solid #0a84ff" : "1.5px solid transparent", borderRadius: 12, padding: "10px 4px", flex: 1, minWidth: 0, textAlign: "center", cursor: "pointer", boxSizing: "border-box" }}>
                     <div style={{ fontSize: 22, fontWeight: 800, color }}>{val}</div>
                     <div style={{ fontSize: 11, color: "#8e8e93" }}>{label}</div>
                   </button>
@@ -337,7 +425,7 @@ export default function App() {
             {stockFilter !== "all" && (
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#1c1c1e", borderRadius: 10, padding: "8px 14px", marginBottom: 14 }}>
                 <span style={{ fontSize: 13, color: "#8e8e93" }}>
-                  絞り込み中：<span style={{ color: "#fff", fontWeight: 700 }}>{stockFilter === "empty" ? "在庫切れ" : "残少"}</span>（{filtered.length}件）
+                  絞り込み中：<span style={{ color: "#fff", fontWeight: 700 }}>{stockFilter === "empty" ? "在庫切れ" : stockFilter === "ordered" ? "注文中" : "残少"}</span>（{filtered.length}件）
                 </span>
                 <button onClick={() => setStockFilter("all")} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#0a84ff", padding: "5px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>解除</button>
               </div>
@@ -353,16 +441,23 @@ export default function App() {
                   </div>
                   <StatusBadge stock={item.stock} threshold={itemThreshold(item)} />
                 </div>
+                <OrderedInfo item={item} onCancel={() => setCancelOrderItem(item)} />
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <button onClick={() => { setStockModal({ item, direction: "out" }); setStockForm({ quantity: 1, order_no: "", project_name: "" }); }}
                       style={{ padding: "8px 16px", borderRadius: 10, background: "#2c2c2e", border: "none", color: "#ff3b30", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>出庫</button>
                     <span style={{ fontSize: 22, fontWeight: 800 }}>{item.stock}<span style={{ fontSize: 13, color: "#8e8e93", marginLeft: 4 }}>{item.unit}</span></span>
-                    <button onClick={() => { setStockModal({ item, direction: "in" }); setStockForm({ quantity: 1, order_no: "", project_name: "" }); }}
+                    <button onClick={() => { setStockModal({ item, direction: "in" }); setStockForm({ quantity: isOrdered(item) ? Number(item.ordered_qty) : 1, order_no: "", project_name: "" }); }}
                       style={{ padding: "8px 16px", borderRadius: 10, background: "#0a84ff", border: "none", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>入庫</button>
                   </div>
+                  {!isAdmin && !isOrdered(item) && (
+                    <button onClick={() => { setOrderModal(item); setOrderQty(1); }} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#64d2ff", padding: "6px 10px", fontSize: 12, cursor: "pointer" }}>📦 注文</button>
+                  )}
                   {isAdmin && (
                     <div style={{ display: "flex", gap: 6 }}>
+                      {!isOrdered(item) && (
+                        <button onClick={() => { setOrderModal(item); setOrderQty(1); }} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#64d2ff", padding: "6px 10px", fontSize: 12, cursor: "pointer" }}>📦</button>
+                      )}
                       <button onClick={() => setEditItem({...item})} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#0a84ff", padding: "6px 12px", fontSize: 13, cursor: "pointer" }}>編集</button>
                       <button onClick={() => setDeleteItem(item)} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#ff3b30", padding: "6px 12px", fontSize: 13, cursor: "pointer" }}>削除</button>
                     </div>
@@ -377,23 +472,20 @@ export default function App() {
         {!loading && tab === "alert" && (
           <>
             <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>⚠️ 在庫アラート</h2>
-            {alertItems.length === 0
-              ? <div style={{ textAlign: "center", color: "#34c759", padding: 40 }}>✓ 在庫不足の商品はありません</div>
-              : alertItems.map(item => (
-                <div key={item.id} style={{ background: "#1c1c1e", borderRadius: 14, padding: 16, marginBottom: 10, borderLeft: `4px solid ${item.stock===0?"#ff3b30":"#ff9500"}` }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div>
-                      <div style={{ fontWeight: 700 }}>{item.name}</div>
-                      {item.sku && <div style={{ fontSize: 12, color: "#8e8e93" }}>SKU: {item.sku}</div>}
-                    </div>
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{ fontSize: 22, fontWeight: 800, color: item.stock===0?"#ff3b30":"#ff9500" }}>{item.stock}<span style={{ fontSize: 13, marginLeft: 4 }}>{item.unit}</span></div>
-                      <StatusBadge stock={item.stock} threshold={itemThreshold(item)} />
-                    </div>
-                  </div>
-                </div>
-              ))
-            }
+            {alertItems.length === 0 && <div style={{ textAlign: "center", color: "#34c759", padding: 40 }}>✓ 在庫不足の商品はありません</div>}
+            {alertItems.length > 0 && (
+              <>
+                <h3 style={{ fontSize: 14, fontWeight: 700, color: "#ff9500", margin: "4px 0 8px" }}>🛒 未注文（{alertNotOrdered.length}件）</h3>
+                {alertNotOrdered.length === 0 && <div style={{ color: "#34c759", fontSize: 13, marginBottom: 16 }}>✓ 未注文の商品はありません</div>}
+                {alertNotOrdered.map(item => renderAlertCard(item))}
+                {alertOrdered.length > 0 && (
+                  <>
+                    <h3 style={{ fontSize: 14, fontWeight: 700, color: "#64d2ff", margin: "20px 0 8px" }}>📦 注文中・入荷待ち（{alertOrdered.length}件）</h3>
+                    {alertOrdered.map(item => renderAlertCard(item))}
+                  </>
+                )}
+              </>
+            )}
           </>
         )}
 
@@ -510,6 +602,11 @@ export default function App() {
               {stockModal.direction === "in" ? "🟢 入庫" : "🔴 出庫"}
             </h2>
             <div style={{ color: "#8e8e93", fontSize: 14, marginBottom: 16 }}>{stockModal.item.name}</div>
+            {stockModal.direction === "in" && isOrdered(stockModal.item) && (
+              <div style={{ background: "#0a2540", border: "1px solid #0a84ff", borderRadius: 10, padding: "8px 12px", marginBottom: 14, fontSize: 13, color: "#64d2ff" }}>
+                📦 注文中（{stockModal.item.ordered_qty}{stockModal.item.unit || ""}）の商品です。入庫すると「注文中」は自動で解除されます。
+              </div>
+            )}
 
             <label style={ls}>個数 *</label>
             <input type="number" min="1" value={stockForm.quantity} onChange={e=>setStockForm(f=>({...f,quantity:e.target.value}))} style={fs} />
@@ -534,6 +631,35 @@ export default function App() {
             </div>
           </>
         )}
+      </Modal>
+
+      {/* 注文中モーダル */}
+      <Modal open={!!orderModal} onClose={() => setOrderModal(null)}>
+        {orderModal && (
+          <>
+            <h2 style={{ margin: "0 0 4px", fontSize: 18, fontWeight: 800 }}>📦 注文中にする</h2>
+            <div style={{ color: "#8e8e93", fontSize: 14, marginBottom: 16 }}>{orderModal.name}（現在 {orderModal.stock}{orderModal.unit}）</div>
+            <label style={ls}>注文した数量 *</label>
+            <input type="number" min="1" value={orderQty} onChange={e=>setOrderQty(e.target.value)} onKeyDown={e=>e.key==="Enter"&&saveOrder()} style={fs} autoFocus />
+            <p style={{ color: "#8e8e93", fontSize: 12, margin: "0 0 14px" }}>注文者「{userName}」・今日の日付で記録します。入庫すると自動で解除されます。</p>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setOrderModal(null)} style={{ flex: 1, background: "#2c2c2e", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>キャンセル</button>
+              <button onClick={saveOrder} style={{ flex: 1, background: "#0a84ff", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>登録する</button>
+            </div>
+          </>
+        )}
+      </Modal>
+
+      {/* 注文取消の確認モーダル */}
+      <Modal open={!!cancelOrderItem} onClose={() => setCancelOrderItem(null)}>
+        <h2 style={{ margin: "0 0 8px", fontSize: 18, fontWeight: 800 }}>注文中の取消</h2>
+        <p style={{ color: "#8e8e93", fontSize: 14, marginBottom: 20 }}>
+          {cancelOrderItem && `「${cancelOrderItem.name}」の注文中の表示を取り消しますか？（在庫数は変わりません）`}
+        </p>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={() => setCancelOrderItem(null)} style={{ flex: 1, background: "#2c2c2e", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>やめる</button>
+          <button onClick={confirmCancelOrder} style={{ flex: 1, background: "#ff3b30", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 700, padding: "13px 0", cursor: "pointer" }}>取り消す</button>
+        </div>
       </Modal>
 
       {/* パスワードモーダル */}
