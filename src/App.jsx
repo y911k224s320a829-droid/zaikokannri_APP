@@ -3,18 +3,93 @@ import { useState, useMemo, useEffect } from "react";
 const SUPABASE_URL = "https://ahfecfutgsjattdbotyk.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFoZmVjZnV0Z3NqYXR0ZGJvdHlrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA5MjkxNjMsImV4cCI6MjA5NjUwNTE2M30.YK9dAY98cs1VnNR-cJrV21GCOmU0rwYNCNyEPrBMRXk";
 const ADMIN_PASSWORD = "OP1929";
+const SESSION_KEY = "zaiko_session_v1";
+const TEAM_EMAIL = "inventory@team.local"; // チーム共通ログインのメール（Supabaseで作ったユーザーと一致させること）
+
+// ── 認証（チーム共通ログイン）セッション管理 ──
+function loadSession() {
+  try { return JSON.parse(localStorage.getItem(SESSION_KEY) || "null"); } catch { return null; }
+}
+function saveSession(s) {
+  try {
+    if (s) localStorage.setItem(SESSION_KEY, JSON.stringify(s));
+    else localStorage.removeItem(SESSION_KEY);
+  } catch { /* localStorage不可の環境は無視 */ }
+}
+
+let currentSession = loadSession(); // { access_token, refresh_token, expires_at }
+
+async function authRequest(pathWithQuery, body) {
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/${pathWithQuery}`, {
+    method: "POST",
+    headers: { "apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = data.error_description || data.msg || data.error || data.message || "";
+    throw new Error(msg || `認証エラー (${res.status})`);
+  }
+  return data;
+}
+
+function setSessionFromAuth(data) {
+  currentSession = {
+    access_token: data.access_token,
+    refresh_token: data.refresh_token,
+    // 期限の60秒前を実効期限として扱い、余裕を持って更新する
+    expires_at: Date.now() + ((data.expires_in || 3600) - 60) * 1000,
+  };
+  saveSession(currentSession);
+  return currentSession;
+}
+
+async function signIn(email, password) {
+  const data = await authRequest("token?grant_type=password", { email, password });
+  return setSessionFromAuth(data);
+}
+
+async function refreshSession() {
+  if (!currentSession || !currentSession.refresh_token) throw new Error("セッションがありません");
+  const data = await authRequest("token?grant_type=refresh_token", { refresh_token: currentSession.refresh_token });
+  return setSessionFromAuth(data);
+}
+
+function signOut() {
+  currentSession = null;
+  saveSession(null);
+}
+
+function isLoggedIn() { return !!(currentSession && currentSession.access_token); }
+
+// セッション失効時にアプリへ通知するためのハンドラ
+let onAuthExpired = null;
+function setAuthExpiredHandler(fn) { onAuthExpired = fn; }
+function handleExpired() { signOut(); if (onAuthExpired) onAuthExpired(); }
 
 async function sbFetch(path, options = {}) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+  // トークンが期限切れ間近なら先に更新
+  if (currentSession && currentSession.expires_at && Date.now() > currentSession.expires_at) {
+    try { await refreshSession(); }
+    catch { handleExpired(); throw new Error("セッションの有効期限が切れました。再度ログインしてください。"); }
+  }
+  const doFetch = () => fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...options,
     headers: {
       "apikey": SUPABASE_ANON_KEY,
-      "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+      "Authorization": `Bearer ${currentSession ? currentSession.access_token : SUPABASE_ANON_KEY}`,
       "Content-Type": "application/json",
       "Prefer": options.prefer || "",
       ...options.headers,
     },
   });
+  let res = await doFetch();
+  // 401なら一度だけトークンを更新して再試行
+  if (res.status === 401 && currentSession) {
+    try { await refreshSession(); }
+    catch { handleExpired(); throw new Error("セッションの有効期限が切れました。再度ログインしてください。"); }
+    res = await doFetch();
+  }
   if (!res.ok) { const err = await res.text(); throw new Error(err); }
   if (res.status === 204 || res.status === 201) return null;
   const text = await res.text();
@@ -81,6 +156,14 @@ export default function App() {
   const [userNameInput, setUserNameInput] = useState("");
   const [showNameScreen, setShowNameScreen] = useState(true);
 
+  // 認証（チーム共通ログイン）
+  const [authed, setAuthed] = useState(isLoggedIn());
+  const [authChecking, setAuthChecking] = useState(isLoggedIn());
+  const [loginEmail, setLoginEmail] = useState(TEAM_EMAIL);
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
+
   const [tab, setTab] = useState("list");
   const [items, setItems] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -142,7 +225,51 @@ export default function App() {
     setLoading(false);
   }
 
-  useEffect(() => { if (!showNameScreen) loadAll(); }, [showNameScreen]);
+  useEffect(() => { if (authed && !showNameScreen) loadAll(); }, [authed, showNameScreen]);
+
+  // セッション失効時はログイン画面へ戻す
+  useEffect(() => {
+    setAuthExpiredHandler(() => {
+      setAuthed(false);
+      setShowNameScreen(true);
+      setUserName("");
+      setIsAdmin(false);
+      setTab("list");
+    });
+    return () => setAuthExpiredHandler(null);
+  }, []);
+
+  // 起動時：保存済みセッションがあれば有効性を確認（トークン更新）
+  useEffect(() => {
+    if (isLoggedIn()) {
+      refreshSession()
+        .then(() => setAuthed(true))
+        .catch(() => { signOut(); setAuthed(false); })
+        .finally(() => setAuthChecking(false));
+    }
+  }, []);
+
+  async function submitLogin() {
+    if (!loginEmail.trim() || !loginPassword) return;
+    setLoginLoading(true); setLoginError("");
+    try {
+      await signIn(loginEmail.trim(), loginPassword);
+      setLoginPassword("");
+      setAuthed(true);
+    } catch (e) {
+      setLoginError("ログインに失敗しました。メールアドレスとパスワードを確認してください。");
+    }
+    setLoginLoading(false);
+  }
+
+  function handleLogout() {
+    signOut();
+    setAuthed(false);
+    setIsAdmin(false);
+    setShowNameScreen(true);
+    setUserName("");
+    setTab("list");
+  }
 
   function submitName() {
     if (!userNameInput.trim()) return;
@@ -353,6 +480,39 @@ export default function App() {
   const fs = { width: "100%", background: "#2c2c2e", border: "none", borderRadius: 10, color: "#fff", fontSize: 15, padding: "12px 14px", boxSizing: "border-box", marginBottom: 10 };
   const ls = { color: "#8e8e93", fontSize: 12, marginBottom: 4, display: "block" };
 
+  // ── 認証チェック中 ──
+  if (authChecking) {
+    return (
+      <div style={{ background: "#000", minHeight: "100vh", color: "#8e8e93", fontFamily: "-apple-system,BlinkMacSystemFont,'Hiragino Sans',sans-serif", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>
+        読み込み中...
+      </div>
+    );
+  }
+
+  // ── ログイン画面（チーム共通） ──
+  if (!authed) {
+    const canLogin = loginEmail.trim() && loginPassword && !loginLoading;
+    return (
+      <div style={{ background: "#000", minHeight: "100vh", color: "#fff", fontFamily: "-apple-system,BlinkMacSystemFont,'Hiragino Sans',sans-serif", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ width: "100%", maxWidth: 360, padding: "0 24px" }}>
+          <div style={{ textAlign: "center", marginBottom: 36 }}>
+            <div style={{ fontSize: 48, marginBottom: 12 }}>🔐</div>
+            <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800 }}>在庫管理</h1>
+            <p style={{ color: "#8e8e93", fontSize: 14, marginTop: 8 }}>チーム共通のログイン情報を入力してください</p>
+          </div>
+          <label style={ls}>メールアドレス</label>
+          <input type="email" autoComplete="username" value={loginEmail} onChange={e => { setLoginEmail(e.target.value); setLoginError(""); }} onKeyDown={e => e.key === "Enter" && submitLogin()} placeholder="team@example.com" style={{ ...fs, border: loginError ? "1px solid #ff3b30" : "none" }} />
+          <label style={ls}>パスワード</label>
+          <input type="password" autoComplete="current-password" value={loginPassword} onChange={e => { setLoginPassword(e.target.value); setLoginError(""); }} onKeyDown={e => e.key === "Enter" && submitLogin()} placeholder="パスワード" style={{ ...fs, border: loginError ? "1px solid #ff3b30" : "none" }} autoFocus />
+          {loginError && <p style={{ color: "#ff3b30", fontSize: 13, margin: "-4px 0 10px" }}>{loginError}</p>}
+          <button onClick={submitLogin} disabled={!canLogin} style={{ width: "100%", background: canLogin ? "#0a84ff" : "#2c2c2e", border: "none", borderRadius: 14, color: canLogin ? "#fff" : "#636366", fontSize: 17, fontWeight: 700, padding: "16px 0", cursor: canLogin ? "pointer" : "default", marginTop: 4 }}>
+            {loginLoading ? "ログイン中..." : "ログイン"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // ── 名前入力画面 ──
   if (showNameScreen) {
     return (
@@ -388,6 +548,7 @@ export default function App() {
               : <button onClick={() => { setPasswordInput(""); setPasswordError(false); setPendingAction(null); setShowPasswordModal(true); }} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#8e8e93", padding: "6px 12px", fontSize: 12, cursor: "pointer" }}>🔒 管理者</button>
             }
             <button onClick={loadAll} style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#fff", padding: "6px 12px", fontSize: 13, cursor: "pointer" }}>↻</button>
+            <button onClick={handleLogout} title="ログアウト" style={{ background: "#2c2c2e", border: "none", borderRadius: 8, color: "#8e8e93", padding: "6px 10px", fontSize: 13, cursor: "pointer" }}>⏻</button>
           </div>
         </div>
         <div style={{ display: "flex", gap: 4 }}>
